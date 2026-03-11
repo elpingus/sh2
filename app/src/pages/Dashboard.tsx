@@ -32,6 +32,7 @@ import SettingsPanel from '@/components/dashboard/SettingsPanel';
 import SupportPanel from '@/components/dashboard/SupportPanel';
 import Referrals from '@/components/dashboard/Referrals';
 import ReviewsPanel from '@/components/dashboard/ReviewsPanel';
+import ProfilePanel from '@/components/dashboard/ProfilePanel';
 import { APP_LANGUAGES, resolveLanguageCode } from '@/lib/languages';
 import { planDisplayName } from '@/lib/planNames';
 
@@ -199,7 +200,13 @@ export default function Dashboard() {
               </button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end" className="w-56 bg-slate-900 border-white/10">
-              <DropdownMenuItem className="text-slate-300 hover:text-white hover:bg-white/5 cursor-pointer">
+              <DropdownMenuItem
+                onClick={() => {
+                  navigate('/dashboard/profile');
+                  setSidebarOpen(false);
+                }}
+                className="text-slate-300 hover:text-white hover:bg-white/5 cursor-pointer"
+              >
                 <User className="w-4 h-4 mr-2" />
                 Profile
               </DropdownMenuItem>
@@ -286,6 +293,7 @@ export default function Dashboard() {
             <Route path="support" element={<SupportPanel />} />
             <Route path="referrals" element={<Referrals />} />
             <Route path="reviews" element={<ReviewsPanel />} />
+            <Route path="profile" element={<ProfilePanel />} />
             <Route path="settings" element={<SettingsPanel mode="account" />} />
           </Routes>
         </main>
