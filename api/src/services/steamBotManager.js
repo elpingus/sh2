@@ -132,6 +132,17 @@ class SteamBotManager extends EventEmitter {
       session.loggingIn = false;
       session.pendingGuard = null;
       session.lastError = null;
+      setTimeout(() => {
+        const sid64 = session.client.steamID?.getSteamID64?.();
+        if (!sid64) return;
+        const profile = session.client.users?.[sid64];
+        const avatarUrl = profile?.avatar_url_full || profile?.avatar_url_medium || profile?.avatar_url_icon || null;
+        if (!avatarUrl) return;
+        void this.persistAccountProfile(userId, accountId, {
+          avatarUrl,
+          steamId64: sid64,
+        });
+      }, 1500);
       settleWait({ type: 'connected' });
       this.emit('connected', { userId, accountId });
     });
@@ -222,6 +233,17 @@ class SteamBotManager extends EventEmitter {
       ));
       return current;
     });
+  }
+
+  async persistAccountProfile(userId, accountId, patch) {
+    await this.persistAccountAuth(userId, accountId, patch);
+    const session = this.sessions.get(this.key(userId, accountId));
+    if (session?.latestAccountSnapshot) {
+      session.latestAccountSnapshot = {
+        ...session.latestAccountSnapshot,
+        ...patch,
+      };
+    }
   }
 
   async waitForLoginResult(session, timeoutMs = 45000) {

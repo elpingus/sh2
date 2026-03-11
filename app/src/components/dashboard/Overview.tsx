@@ -54,6 +54,7 @@ interface BoostStatus {
 interface SteamAccount {
   id: string;
   username: string;
+  avatarUrl?: string;
   connected?: boolean;
   state?: {
     connected: boolean;
@@ -829,7 +830,13 @@ export default function Overview({ onOpenBoostSettings }: OverviewProps) {
                   <tr key={account.id} className="border-b border-white/5 last:border-0">
                     <td className="px-4 py-4">
                       <div className="flex items-center gap-3">
-                        <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-slate-700 to-slate-600 flex items-center justify-center"><span className="text-lg">?</span></div>
+                        <div className="w-10 h-10 overflow-hidden rounded-xl bg-gradient-to-br from-slate-700 to-slate-600 flex items-center justify-center">
+                          {account.avatarUrl ? (
+                            <img src={account.avatarUrl} alt={account.username} className="h-full w-full object-cover" />
+                          ) : (
+                            <span className="text-lg">?</span>
+                          )}
+                        </div>
                         <span className="text-slate-200 font-medium">{account.username}</span>
                       </div>
                     </td>
