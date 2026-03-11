@@ -21,6 +21,7 @@ class BoostEngine extends EventEmitter {
       currentGames: [],
       runningAccounts: 0,
       startedAccountIds: [],
+      accountStats: {},
       error: null,
       updatedAt: new Date().toISOString(),
     };
@@ -30,6 +31,25 @@ class BoostEngine extends EventEmitter {
     return Array.isArray(status?.startedAccountIds)
       ? status.startedAccountIds.map((id) => String(id))
       : [];
+  }
+
+  normalizeAccountStats(status) {
+    return status?.accountStats && typeof status.accountStats === 'object'
+      ? status.accountStats
+      : {};
+  }
+
+  createAccountStatsPatch(accountIds, currentStats = {}) {
+    const nextStats = { ...currentStats };
+    for (const accountId of accountIds) {
+      const key = String(accountId);
+      nextStats[key] = {
+        uptimeSeconds: Number(nextStats[key]?.uptimeSeconds) || 0,
+        boostedMinutes: Number(nextStats[key]?.boostedMinutes) || 0,
+        isPlaying: false,
+      };
+    }
+    return nextStats;
   }
 
   buildCurrentGames(user, startedAccountIds) {
@@ -156,13 +176,15 @@ class BoostEngine extends EventEmitter {
 
     const nextStartedIds = Array.from(new Set([...startedIds, String(account.id)]));
     const currentGames = this.buildCurrentGames(user, nextStartedIds);
+    const accountStats = this.createAccountStatsPatch(nextStartedIds, this.normalizeAccountStats(current));
 
     const nextStatus = await this.persistStatus(user.id, {
       state: 'started',
       error: null,
       startedAccountIds: nextStartedIds,
-      runningAccounts: nextStartedIds.length,
+      runningAccounts: this.steamBotManager.getActivePlayingAccountIds(user.id).length,
       currentGames,
+      accountStats,
     });
 
     this.beginTick(user.id);
@@ -207,6 +229,7 @@ class BoostEngine extends EventEmitter {
           startedAccountIds: connectedIds,
           runningAccounts: connectedIds.length,
           currentGames,
+          accountStats: this.createAccountStatsPatch(connectedIds, this.normalizeAccountStats(status)),
         });
         this.beginTick(user.id);
       } else {
@@ -216,6 +239,7 @@ class BoostEngine extends EventEmitter {
           runningAccounts: 0,
           startedAccountIds: [],
           currentGames: [],
+          accountStats: {},
         });
       }
     }
@@ -229,6 +253,7 @@ class BoostEngine extends EventEmitter {
         state: 'error',
         error: 'No Steam accounts added. Use Add Account first.',
         runningAccounts: 0,
+        accountStats: {},
       });
     }
 
@@ -246,6 +271,8 @@ class BoostEngine extends EventEmitter {
   async stopAccount(user, accountId) {
     const current = this.getStatus(user.id);
     const startedIds = this.normalizeStartedIds(current).filter((id) => id !== String(accountId));
+    const currentStats = this.normalizeAccountStats(current);
+    const { [String(accountId)]: _removed, ...remainingAccountStats } = currentStats;
 
     this.steamBotManager.stopGames(user.id, String(accountId));
 
@@ -256,15 +283,17 @@ class BoostEngine extends EventEmitter {
         runningAccounts: 0,
         startedAccountIds: [],
         currentGames: [],
+        accountStats: {},
       });
     }
 
     const currentGames = this.buildCurrentGames(user, startedIds);
     return this.persistStatus(user.id, {
       state: 'started',
-      runningAccounts: startedIds.length,
+      runningAccounts: this.steamBotManager.getActivePlayingAccountIds(user.id).length,
       startedAccountIds: startedIds,
       currentGames,
+      accountStats: remainingAccountStats,
       error: null,
     });
   }
@@ -287,23 +316,22 @@ class BoostEngine extends EventEmitter {
       }
 
       const startedAccountIds = this.normalizeStartedIds(status);
-      const connectedStartedIds = startedAccountIds.filter((accountId) => {
-        const state = this.steamBotManager.getConnectionState(userId, accountId);
-        return Boolean(state.connected);
-      });
-      let connectedAccounts = connectedStartedIds.length;
-      let activeStartedIds = connectedStartedIds;
-      if (connectedAccounts <= 0) {
+      let activeStartedIds = this.steamBotManager
+        .getActivePlayingAccountIds(userId)
+        .filter((accountId) => startedAccountIds.includes(String(accountId)));
+      let activePlayingAccounts = activeStartedIds.length;
+      if (activePlayingAccounts <= 0) {
         const recoveredIds = await this.reconnectStartedAccounts(user, startedAccountIds);
-        connectedAccounts = recoveredIds.length;
-        if (connectedAccounts > 0) {
+        activePlayingAccounts = recoveredIds.length;
+        if (activePlayingAccounts > 0) {
           activeStartedIds = recoveredIds;
           await this.persistStatus(userId, {
             state: 'started',
             error: null,
             startedAccountIds: recoveredIds,
-            runningAccounts: connectedAccounts,
+            runningAccounts: activePlayingAccounts,
             currentGames: this.buildCurrentGames(user, recoveredIds),
+            accountStats: this.createAccountStatsPatch(recoveredIds, this.normalizeAccountStats(status)),
           });
         } else {
           await this.persistStatus(userId, {
@@ -311,15 +339,17 @@ class BoostEngine extends EventEmitter {
             error: 'All Steam sessions are disconnected. Please relogin your accounts.',
             runningAccounts: 0,
             startedAccountIds: [],
+            currentGames: [],
+            accountStats: {},
           });
           this.stopTick(userId);
           return;
         }
       }
 
-      const nextUptime = status.uptimeSeconds + 1;
-      const totalBoostedMinutes = (Number(status.totalBoostedMinutes) || 0) + connectedAccounts / 60;
-      const boostHoursDelta = connectedAccounts / 3600;
+      const nextUptime = activePlayingAccounts > 0 ? status.uptimeSeconds + 1 : status.uptimeSeconds;
+      const totalBoostedMinutes = (Number(status.totalBoostedMinutes) || 0) + activePlayingAccounts / 60;
+      const boostHoursDelta = activePlayingAccounts / 3600;
 
       const nextHoursLeft = user.hoursLeft === Number.MAX_SAFE_INTEGER
         ? Number.MAX_SAFE_INTEGER
@@ -332,13 +362,29 @@ class BoostEngine extends EventEmitter {
           current.users[userIndex].totalHoursBoosted += boostHoursDelta;
         }
 
+        const currentStatus = current.boostJobs[userId] || this.defaultStatus();
+        const nextAccountStats = this.createAccountStatsPatch(startedAccountIds, this.normalizeAccountStats(currentStatus));
+        for (const accountId of Object.keys(nextAccountStats)) {
+          nextAccountStats[accountId] = {
+            uptimeSeconds: activeStartedIds.includes(accountId)
+              ? (Number(nextAccountStats[accountId]?.uptimeSeconds) || 0) + 1
+              : Number(nextAccountStats[accountId]?.uptimeSeconds) || 0,
+            boostedMinutes: activeStartedIds.includes(accountId)
+              ? (Number(nextAccountStats[accountId]?.boostedMinutes) || 0) + (1 / 60)
+              : Number(nextAccountStats[accountId]?.boostedMinutes) || 0,
+            isPlaying: activeStartedIds.includes(accountId),
+          };
+        }
+
         current.boostJobs[userId] = {
-          ...(current.boostJobs[userId] || this.defaultStatus()),
+          ...currentStatus,
           state: 'started',
           uptimeSeconds: nextUptime,
           totalBoostedMinutes,
-          runningAccounts: connectedAccounts,
+          runningAccounts: activePlayingAccounts,
           startedAccountIds: activeStartedIds,
+          currentGames: this.buildCurrentGames(user, activeStartedIds),
+          accountStats: nextAccountStats,
           error: null,
           updatedAt: new Date().toISOString(),
         };
@@ -356,6 +402,8 @@ class BoostEngine extends EventEmitter {
           error: 'Plan hours are exhausted. Please renew your plan.',
           runningAccounts: 0,
           startedAccountIds: [],
+          currentGames: [],
+          accountStats: {},
         });
         this.stopTick(userId);
       }
@@ -375,13 +423,13 @@ class BoostEngine extends EventEmitter {
   async pause(userId) {
     this.stopTick(userId);
     this.steamBotManager.stopGames(userId);
-    return this.persistStatus(userId, { state: 'paused', runningAccounts: 0, startedAccountIds: [] });
+    return this.persistStatus(userId, { state: 'paused', runningAccounts: 0, startedAccountIds: [], currentGames: [], accountStats: {} });
   }
 
   async stop(userId) {
     this.stopTick(userId);
     this.steamBotManager.stopGames(userId);
-    return this.persistStatus(userId, { state: 'stopped', runningAccounts: 0, startedAccountIds: [] });
+    return this.persistStatus(userId, { state: 'stopped', runningAccounts: 0, startedAccountIds: [], currentGames: [], accountStats: {} });
   }
 }
 

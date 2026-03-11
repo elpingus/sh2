@@ -295,6 +295,17 @@ class SteamBotManager extends EventEmitter {
     return count;
   }
 
+  getActivePlayingAccountIds(userId) {
+    const activeIds = [];
+    for (const session of this.sessions.values()) {
+      if (session.userId !== userId) continue;
+      if (!session.connected) continue;
+      if (!Array.isArray(session.currentGames) || session.currentGames.length <= 0) continue;
+      activeIds.push(String(session.accountId));
+    }
+    return activeIds;
+  }
+
   async connect(user, account) {
     const accountId = account?.id;
     if (!accountId) {

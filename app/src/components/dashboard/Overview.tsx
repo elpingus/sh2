@@ -47,6 +47,11 @@ interface BoostStatus {
   currentGames: SteamGame[];
   runningAccounts?: number;
   startedAccountIds?: string[];
+  accountStats?: Record<string, {
+    uptimeSeconds: number;
+    boostedMinutes: number;
+    isPlaying: boolean;
+  }>;
   error: string | null;
   updatedAt: string;
 }
@@ -362,6 +367,7 @@ const defaultStatus: BoostStatus = {
   currentGames: [],
   runningAccounts: 0,
   startedAccountIds: [],
+  accountStats: {},
   error: null,
   updatedAt: new Date().toISOString(),
 };
@@ -826,6 +832,9 @@ export default function Overview({ onOpenBoostSettings }: OverviewProps) {
               {accounts.map((account) => {
                 const reloginNeeded = Boolean(account.state && !account.state.connected && (account.state.error || account.state.guardRequired || !account.state.loggingIn));
                 const accountRunning = (status.startedAccountIds || []).includes(account.id);
+                const accountStats = status.accountStats?.[account.id];
+                const accountUptime = accountStats?.uptimeSeconds || 0;
+                const accountBoostedHours = (accountStats?.boostedMinutes || 0) / 60;
                 return (
                   <tr key={account.id} className="border-b border-white/5 last:border-0">
                     <td className="px-4 py-4">
@@ -841,8 +850,8 @@ export default function Overview({ onOpenBoostSettings }: OverviewProps) {
                       </div>
                     </td>
                     <td className="px-4 py-4"><span className={`text-sm font-medium ${accountStateClass(account)}`}>{accountStateLabel(account, copy)}</span></td>
-                    <td className="px-4 py-4"><span className="text-slate-400">{formatDuration(status.uptimeSeconds)}</span></td>
-                    <td className="px-4 py-4"><span className="text-slate-400">{formatHourMetric((status.totalBoostedMinutes || 0) / 60)} {copy.timeLeftUnit}</span></td>
+                    <td className="px-4 py-4"><span className="text-slate-400">{formatDuration(accountUptime)}</span></td>
+                    <td className="px-4 py-4"><span className="text-slate-400">{formatHourMetric(accountBoostedHours)} {copy.timeLeftUnit}</span></td>
                     <td className="px-4 py-4">
                       <div className="flex items-center justify-end gap-2">
                         <Button
