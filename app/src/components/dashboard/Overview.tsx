@@ -18,8 +18,6 @@ import {
   Timer,
   AlertCircle,
   CheckCircle2,
-  RefreshCcw,
-  PlugZap,
   Unplug,
   Trash2,
   Search,
@@ -390,7 +388,8 @@ function formatHourMetric(hours: number) {
   return Number.isInteger(rounded) ? String(rounded) : rounded.toFixed(1);
 }
 
-function accountStateLabel(account: SteamAccount, copy: OverviewCopy) {
+function accountStateLabel(account: SteamAccount, copy: OverviewCopy, accountRunning = false) {
+  if (accountRunning) return copy.statusStarted;
   if (account.state?.error) return copy.stateError;
   if (account.state?.guardRequired) return copy.stateGuard;
   if (account.state?.connected) return copy.stateConnected;
@@ -398,7 +397,8 @@ function accountStateLabel(account: SteamAccount, copy: OverviewCopy) {
   return copy.stateDisconnected;
 }
 
-function accountStateClass(account: SteamAccount) {
+function accountStateClass(account: SteamAccount, accountRunning = false) {
+  if (accountRunning) return 'text-emerald-300';
   if (account.state?.error) return 'text-red-300';
   if (account.state?.guardRequired) return 'text-amber-300';
   if (account.state?.connected) return 'text-emerald-300';
@@ -576,36 +576,6 @@ export default function Overview({ onOpenBoostSettings }: OverviewProps) {
       toast.error(error instanceof Error ? error.message : 'Failed to stop boost');
     } finally {
       setBusy(false);
-    }
-  };
-
-  const connectAccount = async (accountId: string, relogin = false) => {
-    setAccountBusyId(accountId);
-    try {
-      if (relogin) {
-        await apiRequest(`/steam/disconnect/${accountId}`, { method: 'POST' });
-      }
-
-      const connectPayload = await apiRequest<{
-        result: { status: 'connected' | 'guard_required' | 'error'; domain?: string | null; message?: string };
-      }>(`/steam/connect/start/${accountId}`, { method: 'POST' });
-
-      if (connectPayload.result.status === 'connected') {
-        toast.success(relogin ? 'Relogin successful' : 'Connected');
-      } else if (connectPayload.result.status === 'guard_required') {
-        setGuardAccountId(accountId);
-        setGuardDomain(connectPayload.result.domain || null);
-        setGuardCode('');
-        setGuardOpen(true);
-      } else {
-        toast.error(connectPayload.result.message || 'Connect failed');
-      }
-
-      await loadAccounts();
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : 'Connect failed');
-    } finally {
-      setAccountBusyId(null);
     }
   };
 
@@ -830,7 +800,6 @@ export default function Overview({ onOpenBoostSettings }: OverviewProps) {
                 </tr>
               )}
               {accounts.map((account) => {
-                const reloginNeeded = Boolean(account.state && !account.state.connected && (account.state.error || account.state.guardRequired || !account.state.loggingIn));
                 const accountRunning = (status.startedAccountIds || []).includes(account.id);
                 const accountStats = status.accountStats?.[account.id];
                 const accountUptime = accountStats?.uptimeSeconds || 0;
@@ -849,7 +818,7 @@ export default function Overview({ onOpenBoostSettings }: OverviewProps) {
                         <span className="text-slate-200 font-medium">{account.username}</span>
                       </div>
                     </td>
-                    <td className="px-4 py-4"><span className={`text-sm font-medium ${accountStateClass(account)}`}>{accountStateLabel(account, copy)}</span></td>
+                    <td className="px-4 py-4"><span className={`text-sm font-medium ${accountStateClass(account, accountRunning)}`}>{accountStateLabel(account, copy, accountRunning)}</span></td>
                     <td className="px-4 py-4"><span className="text-slate-400">{formatDuration(accountUptime)}</span></td>
                     <td className="px-4 py-4"><span className="text-slate-400">{formatHourMetric(accountBoostedHours)} {copy.timeLeftUnit}</span></td>
                     <td className="px-4 py-4">
@@ -864,17 +833,6 @@ export default function Overview({ onOpenBoostSettings }: OverviewProps) {
                           {accountRunning ? <Pause className="w-4 h-4 mr-1" /> : <Play className="w-4 h-4 mr-1" />}
                           {accountRunning ? copy.actionStop : copy.actionStart}
                         </Button>
-                        {reloginNeeded ? (
-                          <Button variant="outline" size="sm" className="border-amber-500/30 bg-amber-500/10 text-amber-200 hover:bg-amber-500/20" onClick={() => connectAccount(account.id, true)} disabled={accountBusyId === account.id}>
-                            <RefreshCcw className="w-4 h-4 mr-1" />
-                            {copy.actionRelogin}
-                          </Button>
-                        ) : (
-                          <Button variant="outline" size="sm" className="border-white/10 bg-white/5 hover:bg-white/10 text-slate-200" onClick={() => connectAccount(account.id)} disabled={accountBusyId === account.id}>
-                            <PlugZap className="w-4 h-4 mr-1" />
-                            {copy.actionConnect}
-                          </Button>
-                        )}
                         <Button variant="outline" size="sm" className="border-white/10 bg-white/5 hover:bg-white/10 text-slate-200" onClick={() => disconnectAccount(account.id)} disabled={accountBusyId === account.id || !account.state?.connected}>
                           <Unplug className="w-4 h-4" />
                         </Button>
