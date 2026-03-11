@@ -1,0 +1,16 @@
+node_modules/
+dist/
+build/
+.vite/
+coverage/
+*.log
+.env
+.env.*
+!.env.example
+api/.env
+app/.env
+app/.env.*
+deploy/certs/
+.pm2/
+.DS_Store
+Thumbs.db
