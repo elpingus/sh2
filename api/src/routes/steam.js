@@ -189,7 +189,11 @@ function steamRoutes(workerClient) {
     const accountId = String(req.params.accountId);
     const accounts = (user.steamAccounts || []).filter((a) => a.id !== accountId);
 
-    await workerClient.disconnectSteam(user.id, accountId);
+    try {
+      await workerClient.disconnectSteam(user.id, accountId);
+    } catch (_error) {
+      // Best-effort disconnect. Removing the account must still work.
+    }
 
     const updated = await patchUser(user.id, {
       steamAccounts: accounts,
@@ -322,7 +326,11 @@ function steamRoutes(workerClient) {
 
   router.post('/disconnect/:accountId', requireAuth, async (req, res) => {
     const accountId = String(req.params.accountId);
-    await workerClient.disconnectSteam(req.auth.user.id, accountId);
+    try {
+      await workerClient.disconnectSteam(req.auth.user.id, accountId);
+    } catch (_error) {
+      // Best-effort disconnect. Persist the disconnected state even if worker is down.
+    }
     const user = getUserById(req.auth.user.id);
     if (user) {
       await patchAccountConnection(user, accountId, false);

@@ -8,8 +8,24 @@ function boostRoutes(workerClient) {
   const router = express.Router();
 
   router.get('/status', requireAuth, async (req, res) => {
-    const { status } = await workerClient.getBoostStatus(req.auth.user.id);
-    return res.json({ status });
+    try {
+      const { status } = await workerClient.getBoostStatus(req.auth.user.id);
+      return res.json({ status });
+    } catch (error) {
+      return res.status(200).json({
+        status: {
+          state: 'error',
+          uptimeSeconds: 0,
+          totalBoostedMinutes: 0,
+          currentGames: [],
+          runningAccounts: 0,
+          startedAccountIds: [],
+          accountStats: {},
+          error: error instanceof Error ? error.message : 'Worker is unavailable',
+          updatedAt: new Date().toISOString(),
+        },
+      });
+    }
   });
 
   router.post('/start', requireAuth, async (req, res) => {

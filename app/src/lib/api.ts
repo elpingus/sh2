@@ -1,4 +1,5 @@
 export const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8787';
+const DEFAULT_TIMEOUT_MS = Number(import.meta.env.VITE_API_TIMEOUT_MS || 15000);
 
 const TOKEN_KEY = 'steamboost_token';
 
@@ -26,11 +27,25 @@ export async function apiRequest<T>(
     headers.set('Authorization', `Bearer ${token}`);
   }
 
-  const res = await fetch(`${API_URL}${path}`, {
-    ...options,
-    headers,
-    credentials: 'include',
-  });
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), DEFAULT_TIMEOUT_MS);
+  let res: Response;
+
+  try {
+    res = await fetch(`${API_URL}${path}`, {
+      ...options,
+      headers,
+      credentials: 'include',
+      signal: controller.signal,
+    });
+  } catch (error) {
+    window.clearTimeout(timeout);
+    if (error instanceof DOMException && error.name === 'AbortError') {
+      throw new Error('Request timed out. Try again.');
+    }
+    throw error;
+  }
+  window.clearTimeout(timeout);
 
   let payload: unknown = null;
   try {
@@ -43,7 +58,11 @@ export async function apiRequest<T>(
     const message =
       payload && typeof payload === 'object' && 'message' in payload
         ? String((payload as { message: string }).message)
-        : 'Request failed';
+        : res.status === 503
+          ? 'Worker is unavailable. Check the worker process.'
+          : res.status === 504
+            ? 'Request timed out on the server. Try again.'
+            : 'Request failed';
     throw new Error(message);
   }
 
