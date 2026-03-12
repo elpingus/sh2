@@ -4,6 +4,7 @@ const { requireAuth } = require('../middleware/auth');
 const { readDb, updateDb } = require('../lib/db');
 const { getPlanLimits } = require('../lib/plans');
 const { logAuditFromRequest } = require('../services/auditLog');
+const { getConfiguredShopierProduct, verifyPurchaseWithShopier } = require('../services/shopier');
 
 const PLAN_BASE = {
   basic: 0.99,
@@ -45,6 +46,7 @@ function computeQuote(plan, accounts, couponCode) {
 
   discount = Math.max(0, Math.min(discount, subtotal));
   const total = Math.max(0, subtotal - discount);
+  const shopierProduct = getConfiguredShopierProduct(plan);
 
   return {
     plan,
@@ -53,6 +55,75 @@ function computeQuote(plan, accounts, couponCode) {
     discount: Number(discount.toFixed(2)),
     total: Number(total.toFixed(2)),
     coupon: coupon ? { code: coupon.code, type: coupon.type, value: coupon.value } : null,
+    paymentProvider: 'shopier',
+    providerAmount: shopierProduct?.chargeAmount ?? Number(total.toFixed(2)),
+    providerCurrency: shopierProduct?.chargeCurrency || 'USD',
+    providerAvailable: Boolean(shopierProduct?.productUrl),
+  };
+}
+
+function generateRedeemCode() {
+  const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  const chunk = () => Array.from({ length: 4 }, () => alphabet[Math.floor(Math.random() * alphabet.length)]).join('');
+  return `${chunk()}-${chunk()}-${chunk()}-${chunk()}`;
+}
+
+function formatHoursLeft(value, plan) {
+  if (plan === 'lifetime') {
+    return Number.MAX_SAFE_INTEGER;
+  }
+  return Number(value) || 0;
+}
+
+function applyPurchaseToUser(user, purchase) {
+  const limits = getPlanLimits(purchase.plan);
+  const expiresAt = purchase.plan === 'lifetime'
+    ? null
+    : new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
+  const existingSlots = Number(user.steamAccountSlots) || 1;
+
+  return {
+    ...user,
+    plan: purchase.plan,
+    maxGames: limits.maxGames,
+    hoursLeft: formatHoursLeft(Math.max(Number(user.hoursLeft) || 0, limits.hours), purchase.plan),
+    steamAccountSlots: Math.max(existingSlots, Number(purchase.accounts) || 1),
+    subscription: {
+      plan: purchase.plan,
+      accounts: purchase.accounts,
+      expiresAt,
+      status: 'active',
+      provider: 'shopier',
+    },
+  };
+}
+
+function buildReceipt(purchase, redeemCode = null) {
+  return {
+    invoiceId: purchase.id,
+    status: purchase.status,
+    plan: purchase.plan,
+    accounts: purchase.accounts,
+    subtotal: purchase.subtotal,
+    discount: purchase.discount,
+    total: purchase.total,
+    quoteCurrency: purchase.quoteCurrency || 'USD',
+    paymentAmount: purchase.paymentAmount ?? purchase.total,
+    paymentCurrency: purchase.paymentCurrency || purchase.quoteCurrency || 'USD',
+    couponCode: purchase.couponCode || null,
+    paymentMethod: purchase.paymentMethod || 'shopier',
+    productUrl: purchase.productUrl || null,
+    providerOrderId: purchase.providerOrderId || null,
+    providerPaidAt: purchase.providerPaidAt || null,
+    redeemCode: redeemCode
+      ? {
+          code: redeemCode.code,
+          status: redeemCode.status,
+          redeemedAt: redeemCode.redeemedAt || null,
+          redeemedBy: redeemCode.redeemedBy || null,
+        }
+      : null,
+    createdAt: purchase.createdAt,
   };
 }
 
@@ -69,14 +140,32 @@ function billingRoutes() {
     return res.json({ quote: computeQuote(plan, accounts, couponCode) });
   });
 
+  router.get('/history', (req, res) => {
+    const db = readDb();
+    const purchases = (db.purchases || [])
+      .filter((purchase) => purchase.userId === req.auth.user.id)
+      .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)))
+      .map((purchase) => {
+        const redeemCode = (db.redeemCodes || []).find((code) => code.purchaseId === purchase.id) || null;
+        return buildReceipt(purchase, redeemCode);
+      });
+    return res.json({ purchases });
+  });
+
   router.post('/checkout', async (req, res) => {
-    const { plan, accounts, couponCode, paymentMethod } = req.body || {};
+    const { plan, accounts, couponCode } = req.body || {};
     if (!plan || !PLAN_BASE[plan]) {
       return res.status(400).json({ message: 'Invalid plan' });
     }
 
+    const shopierProduct = getConfiguredShopierProduct(plan);
+    if (!shopierProduct?.productUrl) {
+      return res.status(400).json({ message: 'This plan is not configured for Shopier yet.' });
+    }
+
     const quote = computeQuote(plan, accounts, couponCode);
     const invoiceId = `INV-${randomUUID().slice(0, 8).toUpperCase()}`;
+    const receiptUrl = `/dashboard/billing?invoice=${encodeURIComponent(invoiceId)}`;
 
     await updateDb((current) => {
       current.purchases.push({
@@ -84,11 +173,18 @@ function billingRoutes() {
         userId: req.auth.user.id,
         plan,
         accounts: quote.accounts,
-        total: quote.total,
+        total: shopierProduct.chargeAmount ?? quote.total,
         subtotal: quote.subtotal,
         discount: quote.discount,
+        quoteTotal: quote.total,
+        quoteCurrency: 'USD',
+        paymentAmount: shopierProduct.chargeAmount ?? quote.total,
+        paymentCurrency: shopierProduct.chargeCurrency || 'USD',
         couponCode: quote.coupon?.code || null,
-        paymentMethod: paymentMethod || 'card',
+        paymentMethod: 'shopier',
+        provider: 'shopier',
+        productUrl: shopierProduct.productUrl,
+        productId: shopierProduct.productId,
         status: 'pending',
         createdAt: new Date().toISOString(),
       });
@@ -101,72 +197,173 @@ function billingRoutes() {
       meta: {
         plan,
         accounts: quote.accounts,
-        total: quote.total,
-        paymentMethod: paymentMethod || 'card',
+        total: shopierProduct.chargeAmount ?? quote.total,
+        paymentMethod: 'shopier',
+        productId: shopierProduct.productId,
       },
     });
 
-    const checkoutBase = process.env.STRIPE_CHECKOUT_URL || 'https://checkout.stripe.com';
-
     return res.json({
       invoiceId,
-      checkoutUrl: `${checkoutBase}?prefilled_email=${encodeURIComponent(req.auth.user.email)}&client_reference_id=${invoiceId}`,
+      checkoutUrl: shopierProduct.productUrl,
+      receiptUrl,
       quote,
+      provider: {
+        name: 'Shopier',
+        amount: shopierProduct.chargeAmount ?? quote.total,
+        currency: shopierProduct.chargeCurrency || 'USD',
+      },
     });
   });
 
-  router.post('/activate', async (req, res) => {
+  router.get('/receipt/:invoiceId', (req, res) => {
+    const { invoiceId } = req.params;
+    const db = readDb();
+    const purchase = (db.purchases || []).find((item) => item.id === invoiceId && item.userId === req.auth.user.id);
+    if (!purchase) {
+      return res.status(404).json({ message: 'Invoice not found' });
+    }
+    const redeemCode = (db.redeemCodes || []).find((code) => code.purchaseId === purchase.id) || null;
+    return res.json({ receipt: buildReceipt(purchase, redeemCode) });
+  });
+
+  router.post('/verify', async (req, res) => {
     const { invoiceId } = req.body || {};
     if (!invoiceId) {
       return res.status(400).json({ message: 'invoiceId required' });
     }
 
     const db = readDb();
-    const purchase = db.purchases.find((p) => p.id === invoiceId && p.userId === req.auth.user.id);
+    const purchase = (db.purchases || []).find((item) => item.id === invoiceId && item.userId === req.auth.user.id);
     if (!purchase) {
       return res.status(404).json({ message: 'Invoice not found' });
     }
 
-    const limits = getPlanLimits(purchase.plan);
-    const months = purchase.plan === 'lifetime' ? 1200 : 1;
-    const expiresAt = purchase.plan === 'lifetime'
-      ? null
-      : new Date(Date.now() + months * 30 * 24 * 60 * 60 * 1000).toISOString();
+    let redeemCode = (db.redeemCodes || []).find((code) => code.purchaseId === purchase.id) || null;
+    if (purchase.status === 'paid' && redeemCode) {
+      return res.json({ ok: true, receipt: buildReceipt(purchase, redeemCode) });
+    }
+
+    const verification = await verifyPurchaseWithShopier({
+      purchase,
+      user: req.auth.user,
+    });
+
+    if (!verification.ok) {
+      return res.status(409).json({ message: verification.message });
+    }
 
     await updateDb((current) => {
-      const purchaseIdx = current.purchases.findIndex((p) => p.id === invoiceId);
-      if (purchaseIdx !== -1) {
-        current.purchases[purchaseIdx].status = 'paid';
+      const purchaseIndex = current.purchases.findIndex((item) => item.id === invoiceId);
+      if (purchaseIndex === -1) {
+        return current;
       }
 
-      const userIdx = current.users.findIndex((u) => u.id === req.auth.user.id);
-      if (userIdx !== -1) {
-        current.users[userIdx].plan = purchase.plan;
-        current.users[userIdx].maxGames = limits.maxGames;
-        current.users[userIdx].hoursLeft = Math.max(current.users[userIdx].hoursLeft, limits.hours);
-        const existingSlots = Number(current.users[userIdx].steamAccountSlots) || 1;
-        current.users[userIdx].steamAccountSlots = Math.max(existingSlots, Number(purchase.accounts) || 1);
-        current.users[userIdx].subscription = {
-          plan: purchase.plan,
-          accounts: purchase.accounts,
-          expiresAt,
+      current.purchases[purchaseIndex] = {
+        ...current.purchases[purchaseIndex],
+        status: 'paid',
+        providerOrderId: verification.orderId,
+        providerPaidAt: verification.paidAt,
+        paymentAmount: verification.amount ?? current.purchases[purchaseIndex].paymentAmount,
+        paymentCurrency: verification.currency || current.purchases[purchaseIndex].paymentCurrency,
+      };
+
+      const existingCode = (current.redeemCodes || []).find((code) => code.purchaseId === invoiceId);
+      if (!existingCode) {
+        const code = generateRedeemCode();
+        current.redeemCodes.push({
+          id: `RDM-${randomUUID().slice(0, 8).toUpperCase()}`,
+          code,
+          purchaseId: invoiceId,
+          plan: current.purchases[purchaseIndex].plan,
+          accounts: current.purchases[purchaseIndex].accounts,
           status: 'active',
-        };
+          createdAt: new Date().toISOString(),
+        });
       }
+
       return current;
     });
+
+    const latestDb = readDb();
+    const latestPurchase = latestDb.purchases.find((item) => item.id === invoiceId && item.userId === req.auth.user.id);
+    redeemCode = (latestDb.redeemCodes || []).find((code) => code.purchaseId === invoiceId) || null;
+
     await logAuditFromRequest(req, {
-      action: 'billing_activate',
+      action: 'billing_shopier_verified',
       targetType: 'invoice',
       targetId: invoiceId,
       meta: {
-        plan: purchase.plan,
-        accounts: purchase.accounts,
-        total: purchase.total,
+        providerOrderId: verification.orderId,
+        amount: verification.amount,
+        currency: verification.currency,
       },
     });
 
-    return res.json({ ok: true });
+    return res.json({ ok: true, receipt: buildReceipt(latestPurchase, redeemCode) });
+  });
+
+  router.post('/redeem', async (req, res) => {
+    const rawCode = String(req.body?.code || '').trim().toUpperCase();
+    if (!rawCode) {
+      return res.status(400).json({ message: 'Redeem code required' });
+    }
+
+    const db = readDb();
+    const redeemCode = (db.redeemCodes || []).find((item) => item.code === rawCode);
+    if (!redeemCode) {
+      return res.status(404).json({ message: 'Redeem code not found' });
+    }
+    if (redeemCode.status !== 'active') {
+      return res.status(409).json({ message: 'Redeem code is already used.' });
+    }
+
+    const purchase = (db.purchases || []).find((item) => item.id === redeemCode.purchaseId);
+    if (!purchase || purchase.status !== 'paid') {
+      return res.status(409).json({ message: 'This payment is not confirmed yet.' });
+    }
+
+    let updatedUser = null;
+    await updateDb((current) => {
+      const codeIndex = current.redeemCodes.findIndex((item) => item.code === rawCode);
+      const purchaseIndex = current.purchases.findIndex((item) => item.id === redeemCode.purchaseId);
+      const userIndex = current.users.findIndex((item) => item.id === req.auth.user.id);
+      if (codeIndex === -1 || purchaseIndex === -1 || userIndex === -1) {
+        return current;
+      }
+
+      current.users[userIndex] = applyPurchaseToUser(current.users[userIndex], current.purchases[purchaseIndex]);
+      updatedUser = current.users[userIndex];
+
+      current.redeemCodes[codeIndex] = {
+        ...current.redeemCodes[codeIndex],
+        status: 'redeemed',
+        redeemedAt: new Date().toISOString(),
+        redeemedBy: req.auth.user.id,
+      };
+
+      current.purchases[purchaseIndex] = {
+        ...current.purchases[purchaseIndex],
+        status: 'redeemed',
+        redeemedAt: new Date().toISOString(),
+        redeemedBy: req.auth.user.id,
+      };
+
+      return current;
+    });
+
+    await logAuditFromRequest(req, {
+      action: 'billing_redeem_code',
+      targetType: 'redeem_code',
+      targetId: rawCode,
+      meta: {
+        purchaseId: purchase.id,
+        plan: purchase.plan,
+        accounts: purchase.accounts,
+      },
+    });
+
+    return res.json({ ok: true, user: updatedUser, purchaseId: purchase.id });
   });
 
   return router;

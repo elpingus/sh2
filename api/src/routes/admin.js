@@ -39,7 +39,7 @@ function adminRoutes() {
       activeUsers: startedJobs.length,
       paidUsers: users.filter((u) => u.plan !== 'free').length,
       totalRevenue: purchases
-        .filter((purchase) => purchase && purchase.status === 'paid')
+        .filter((purchase) => purchase && ['paid', 'redeemed'].includes(String(purchase.status)))
         .reduce((acc, purchase) => acc + (Number(purchase.total) || 0), 0),
       planBreakdown: Object.keys(PLAN_PRICES).reduce((acc, plan) => {
         acc[plan] = users.filter((u) => u.plan === plan).length;

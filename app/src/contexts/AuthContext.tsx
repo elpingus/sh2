@@ -82,6 +82,13 @@ function applyAuthFromUrl(): string | null {
   return token;
 }
 
+function consumePostAuthRedirect() {
+  const redirect = sessionStorage.getItem('post_auth_redirect');
+  if (!redirect) return null;
+  sessionStorage.removeItem('post_auth_redirect');
+  return redirect;
+}
+
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [isLoading, setIsLoading] = useState(true);
@@ -102,10 +109,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     const bootstrap = async () => {
       try {
-        applyAuthFromUrl();
+        const authToken = applyAuthFromUrl();
         const token = getToken();
         if (token) {
           await refreshUser();
+          if (authToken) {
+            const redirect = consumePostAuthRedirect();
+            if (redirect) {
+              window.location.href = redirect;
+              return;
+            }
+          }
         }
       } finally {
         setIsLoading(false);

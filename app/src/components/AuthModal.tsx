@@ -46,6 +46,12 @@ export default function AuthModal({ open, onOpenChange, mode }: AuthModalProps) 
   const navigate = useNavigate();
   const { t } = useTranslation();
 
+  const consumePostAuthRedirect = () => {
+    const redirect = sessionStorage.getItem('post_auth_redirect') || '/dashboard';
+    sessionStorage.removeItem('post_auth_redirect');
+    return redirect;
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setIsLoading(true);
@@ -64,7 +70,7 @@ export default function AuthModal({ open, onOpenChange, mode }: AuthModalProps) 
 
     if (success) {
       onOpenChange(false);
-      navigate('/dashboard');
+      navigate(consumePostAuthRedirect());
     }
     
     setIsLoading(false);

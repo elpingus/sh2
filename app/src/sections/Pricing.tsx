@@ -1,8 +1,10 @@
 import { motion } from 'framer-motion';
+import { useNavigate } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { plans } from '@/data/plans';
 import { Check, Sparkles, ArrowRight, ShieldCheck } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
+import { useAuth } from '@/contexts/AuthContext';
 
 interface PricingProps {
   openAuth: (mode: 'login' | 'register') => void;
@@ -10,9 +12,22 @@ interface PricingProps {
 
 export default function Pricing({ openAuth }: PricingProps) {
   const { t } = useTranslation();
+  const navigate = useNavigate();
+  const { isAuthenticated } = useAuth();
 
   const highlighted = plans.find((p) => p.popular) || plans[3] || plans[0];
   const sidePlans = plans.filter((p) => p.id !== highlighted.id);
+
+  const startPurchase = (planId: string) => {
+    const redirectTarget = `/dashboard/billing?plan=${encodeURIComponent(planId)}`;
+    if (isAuthenticated) {
+      navigate(redirectTarget);
+      return;
+    }
+
+    sessionStorage.setItem('post_auth_redirect', redirectTarget);
+    openAuth('register');
+  };
 
   return (
     <section id="pricing" className="relative py-24 lg:py-32 overflow-hidden">
@@ -71,7 +86,7 @@ export default function Pricing({ openAuth }: PricingProps) {
                 ))}
               </div>
 
-              <Button onClick={() => openAuth('register')} className="w-full h-12 text-base bg-gradient-to-r from-violet-500 to-purple-600 hover:from-violet-600 hover:to-purple-700 text-white">
+              <Button onClick={() => startPurchase(highlighted.id)} className="w-full h-12 text-base bg-gradient-to-r from-violet-500 to-purple-600 hover:from-violet-600 hover:to-purple-700 text-white">
                 {t('pricing.purchase')}
                 <ArrowRight className="w-4 h-4 ml-2" />
               </Button>
@@ -108,7 +123,7 @@ export default function Pricing({ openAuth }: PricingProps) {
                   ))}
                 </div>
 
-                <Button onClick={() => openAuth('register')} variant="outline" className="w-full border-white/15 bg-white/5 text-slate-200 hover:bg-white/10">
+                <Button onClick={() => (plan.id === 'free' ? openAuth('register') : startPurchase(plan.id))} variant="outline" className="w-full border-white/15 bg-white/5 text-slate-200 hover:bg-white/10">
                   {plan.id === 'free' ? t('pricing.getStarted') : t('pricing.purchase')}
                 </Button>
               </motion.div>

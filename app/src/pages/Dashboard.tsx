@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Routes, Route, useLocation, Link, useNavigate, Navigate } from 'react-router-dom';
+import { Routes, Route, useLocation, Link, useNavigate } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { Badge } from '@/components/ui/badge';
@@ -16,10 +16,12 @@ import { useAuth } from '@/contexts/AuthContext';
 import { useTranslation } from 'react-i18next';
 import {
   LayoutDashboard,
+  Receipt,
   Settings,
   HelpCircle,
   Share2,
   Star,
+  Ticket,
   User,
   LogOut,
   Menu,
@@ -28,19 +30,23 @@ import {
 } from 'lucide-react';
 import Overview from '@/components/dashboard/Overview';
 import Games from '@/components/dashboard/Games';
+import Billing from '@/components/dashboard/Billing';
 import SettingsPanel from '@/components/dashboard/SettingsPanel';
 import SupportPanel from '@/components/dashboard/SupportPanel';
 import Referrals from '@/components/dashboard/Referrals';
 import ReviewsPanel from '@/components/dashboard/ReviewsPanel';
 import ProfilePanel from '@/components/dashboard/ProfilePanel';
+import RedeemPanel from '@/components/dashboard/RedeemPanel';
 import { APP_LANGUAGES, resolveLanguageCode } from '@/lib/languages';
 import { planDisplayName } from '@/lib/planNames';
 
 const sidebarItems = [
   { icon: LayoutDashboard, label: 'overview', path: '' },
+  { icon: Receipt, label: 'billing', path: 'billing' },
   { icon: HelpCircle, label: 'support', path: 'support' },
   { icon: Share2, label: 'referrals', path: 'referrals' },
   { icon: Star, label: 'reviews', path: 'reviews' },
+  { icon: Ticket, label: 'redeem', path: 'redeem' },
 ];
 
 export default function Dashboard() {
@@ -52,6 +58,10 @@ export default function Dashboard() {
   const { user, logout, isAuthenticated, isLoading } = useAuth();
   const { t, i18n } = useTranslation();
   const currentLang = APP_LANGUAGES.find((l) => l.code === resolveLanguageCode(i18n.language)) || APP_LANGUAGES[0];
+  const sidebarLabel = (label: string) => {
+    if (label === 'redeem') return 'Redeem';
+    return t(`dashboard.${label}`);
+  };
 
   useEffect(() => {
     if (!isLoading && !isAuthenticated) {
@@ -126,7 +136,7 @@ export default function Dashboard() {
               }`}
             >
               <item.icon className="w-5 h-5" />
-              {t(`dashboard.${item.label}`)}
+              {sidebarLabel(item.label)}
             </Link>
           ))}
 
@@ -155,7 +165,7 @@ export default function Dashboard() {
               }`}
             >
               <item.icon className="w-5 h-5" />
-              {t(`dashboard.${item.label}`)}
+              {sidebarLabel(item.label)}
             </Link>
           ))}
 
@@ -289,10 +299,11 @@ export default function Dashboard() {
           <Routes>
             <Route path="/" element={<Overview onOpenBoostSettings={() => setBoostSettingsOpen(true)} />} />
             <Route path="games" element={<Games />} />
-            <Route path="billing" element={<Navigate to="/dashboard" replace />} />
+            <Route path="billing" element={<Billing />} />
             <Route path="support" element={<SupportPanel />} />
             <Route path="referrals" element={<Referrals />} />
             <Route path="reviews" element={<ReviewsPanel />} />
+            <Route path="redeem" element={<RedeemPanel />} />
             <Route path="profile" element={<ProfilePanel />} />
             <Route path="settings" element={<SettingsPanel mode="account" />} />
           </Routes>

@@ -14,7 +14,7 @@ function referralRoutes() {
 
     const referredUsers = getEligibleReferredUsers(db.users, user.id);
     const referredIds = new Set(referredUsers.map((u) => u.id));
-    const paidReferrals = db.purchases.filter((p) => referredIds.has(p.userId) && p.status === 'paid');
+    const paidReferrals = db.purchases.filter((p) => referredIds.has(p.userId) && ['paid', 'redeemed'].includes(String(p.status)));
 
     const totalReferred = referredUsers.length;
     const paidReferred = new Set(paidReferrals.map((p) => p.userId)).size;
@@ -43,7 +43,7 @@ function referralRoutes() {
 
     const referredUsers = getEligibleReferredUsers(db.users, user.id);
     const referredIds = new Set(referredUsers.map((u) => u.id));
-    const paidReferrals = db.purchases.filter((p) => referredIds.has(p.userId) && p.status === 'paid');
+    const paidReferrals = db.purchases.filter((p) => referredIds.has(p.userId) && ['paid', 'redeemed'].includes(String(p.status)));
     const paidReferred = new Set(paidReferrals.map((p) => p.userId)).size;
 
     const claims = Number(user.referralClaims) || 0;

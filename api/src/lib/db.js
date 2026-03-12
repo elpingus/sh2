@@ -12,7 +12,8 @@ const defaultDb = {
   tickets: [],
   reviews: [],
   coupons: [],
-  purchases: []
+  purchases: [],
+  redeemCodes: [],
 };
 
 function ensureDbFile() {

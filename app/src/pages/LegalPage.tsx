@@ -44,7 +44,7 @@ export default function LegalPage({ openAuth, changeLanguage, type }: LegalPageP
           <>
             <Section title="1. Service Scope">
               <p>
-                SteamBoost provides software and automation tools for Steam hour boosting and
+                Steamhoursnet provides software and automation tools for Steam hour boosting and
                 account management features available in your selected plan.
               </p>
               <p>
@@ -66,8 +66,14 @@ export default function LegalPage({ openAuth, changeLanguage, type }: LegalPageP
 
             <Section title="3. Payments, Plans, and Refunds">
               <p>
-                Paid plans are billed according to the amount and period shown at checkout.
-                Multi-account pricing and discounts are shown before payment confirmation.
+                Paid plans are sold as digital services. Shopier is the payment provider currently
+                used for hosted checkout. Multi-account pricing and discounts are shown before
+                payment confirmation.
+              </p>
+              <p>
+                After payment confirmation, the service generates a redeem code that activates the
+                purchased plan on the account where the code is redeemed. Delivery is digital and
+                no physical shipment is involved.
               </p>
               <p>
                 Refund requests are reviewed case-by-case, including service usage status, abuse
@@ -128,6 +134,10 @@ export default function LegalPage({ openAuth, changeLanguage, type }: LegalPageP
                 prevent abuse, respond to support requests, and improve product stability.
               </p>
               <p>
+                Billing and fulfillment metadata can include purchase status, invoice identifiers,
+                redeem code status, payment amount, and payment timestamps.
+              </p>
+              <p>
                 We do not sell your personal data to third parties.
               </p>
             </Section>
@@ -135,7 +145,7 @@ export default function LegalPage({ openAuth, changeLanguage, type }: LegalPageP
             <Section title="3. Sharing and Processors">
               <p>
                 We may share limited data with infrastructure and payment providers only as needed
-                to operate the service (for example payment processing, fraud checks, or hosting).
+                to operate the service (for example Shopier payment processing, fraud checks, or hosting).
               </p>
               <p>
                 We require processors to protect data under contractual and security obligations.
