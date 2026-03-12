@@ -133,6 +133,17 @@ function extractOrderId(order) {
   return value ? String(value) : null;
 }
 
+function extractOrderPhone(order) {
+  const value = getNestedValue(order, [
+    'customer.phone',
+    'buyer.phone',
+    'billingAddress.phone',
+    'billing_address.phone',
+    'phone',
+  ]);
+  return value ? String(value).trim() : null;
+}
+
 function extractOrderProductIds(order) {
   const lineItems = getNestedValue(order, ['lineItems', 'line_items', 'products', 'items']);
   if (!Array.isArray(lineItems)) {
@@ -143,6 +154,61 @@ function extractOrderProductIds(order) {
     .map((item) => getNestedValue(item, ['productId', 'product_id', 'id']))
     .map((value) => Number(value))
     .filter((value) => Number.isFinite(value));
+}
+
+function extractWebhookOrder(payload) {
+  if (payload && typeof payload === 'object') {
+    if (payload.order && typeof payload.order === 'object') {
+      return payload.order;
+    }
+    if (payload.data && typeof payload.data === 'object') {
+      return payload.data;
+    }
+  }
+  return payload;
+}
+
+function findMatchingPurchase({ db, order, user = null }) {
+  const email = extractOrderEmail(order);
+  const amount = extractOrderAmount(order);
+  const currency = extractOrderCurrency(order);
+  const productIds = extractOrderProductIds(order);
+  const orderId = extractOrderId(order);
+
+  const candidatePurchases = (db.purchases || []).filter((purchase) => {
+    if (!['pending', 'paid'].includes(String(purchase.status || '').toLowerCase())) {
+      return false;
+    }
+
+    if (orderId && purchase.providerOrderId && String(purchase.providerOrderId) === String(orderId)) {
+      return true;
+    }
+
+    if (user && purchase.userId !== user.id) {
+      return false;
+    }
+
+    if (productIds.length && purchase.productId && !productIds.includes(Number(purchase.productId))) {
+      return false;
+    }
+
+    if (email && user && String(user.email || '').trim().toLowerCase() !== email) {
+      return false;
+    }
+
+    if (amount != null && Number(purchase.paymentAmount) !== amount) {
+      return false;
+    }
+
+    if (currency && String(purchase.paymentCurrency || '').toUpperCase() !== currency) {
+      return false;
+    }
+
+    return true;
+  });
+
+  return candidatePurchases
+    .sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')))[0] || null;
 }
 
 function isPaidStatus(status) {
@@ -228,4 +294,14 @@ async function verifyPurchaseWithShopier({ purchase, user }) {
 module.exports = {
   getConfiguredShopierProduct,
   verifyPurchaseWithShopier,
+  extractOrderId,
+  extractOrderEmail,
+  extractOrderPhone,
+  extractOrderAmount,
+  extractOrderCurrency,
+  extractOrderStatus,
+  extractWebhookOrder,
+  extractOrderProductIds,
+  findMatchingPurchase,
+  isPaidStatus,
 };

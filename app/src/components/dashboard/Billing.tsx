@@ -125,7 +125,7 @@ export default function Billing() {
     if (!['pending'].includes(receipt.status)) return undefined;
 
     const interval = window.setInterval(() => {
-      void verifyPayment(invoiceId, true);
+      void loadReceipt(invoiceId, true);
     }, 6000);
 
     return () => window.clearInterval(interval);
@@ -251,7 +251,7 @@ export default function Billing() {
                   <p className="text-sm text-slate-400">
                     {receipt?.status === 'redeemed'
                       ? 'Your subscription is active. The receipt and key history remain below.'
-                      : 'Pay in the Shopier window, then use Verify Payment. The site will generate your redeem key automatically.'}
+                      : 'Pay in the Shopier window, return to this page, and wait. The site checks for payment updates automatically and will generate your redeem key.'}
                   </p>
                 </div>
               </div>

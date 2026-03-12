@@ -4,7 +4,17 @@ const { requireAuth } = require('../middleware/auth');
 const { readDb, updateDb } = require('../lib/db');
 const { getPlanLimits } = require('../lib/plans');
 const { logAuditFromRequest } = require('../services/auditLog');
-const { getConfiguredShopierProduct, verifyPurchaseWithShopier } = require('../services/shopier');
+const {
+  getConfiguredShopierProduct,
+  verifyPurchaseWithShopier,
+  extractWebhookOrder,
+  extractOrderEmail,
+  extractOrderAmount,
+  extractOrderCurrency,
+  extractOrderId,
+  findMatchingPurchase,
+  isPaidStatus,
+} = require('../services/shopier');
 
 const PLAN_BASE = {
   basic: 0.99,
@@ -127,8 +137,86 @@ function buildReceipt(purchase, redeemCode = null) {
   };
 }
 
+async function markPurchasePaid({ purchaseId, verification }) {
+  await updateDb((current) => {
+    const purchaseIndex = current.purchases.findIndex((item) => item.id === purchaseId);
+    if (purchaseIndex === -1) {
+      return current;
+    }
+
+    current.purchases[purchaseIndex] = {
+      ...current.purchases[purchaseIndex],
+      status: 'paid',
+      providerOrderId: verification.orderId || current.purchases[purchaseIndex].providerOrderId,
+      providerPaidAt: verification.paidAt || current.purchases[purchaseIndex].providerPaidAt || new Date().toISOString(),
+      paymentAmount: verification.amount ?? current.purchases[purchaseIndex].paymentAmount,
+      paymentCurrency: verification.currency || current.purchases[purchaseIndex].paymentCurrency,
+    };
+
+    const existingCode = (current.redeemCodes || []).find((code) => code.purchaseId === purchaseId);
+    if (!existingCode) {
+      const code = generateRedeemCode();
+      current.redeemCodes.push({
+        id: `RDM-${randomUUID().slice(0, 8).toUpperCase()}`,
+        code,
+        purchaseId,
+        plan: current.purchases[purchaseIndex].plan,
+        accounts: current.purchases[purchaseIndex].accounts,
+        status: 'active',
+        createdAt: new Date().toISOString(),
+      });
+    }
+
+    return current;
+  });
+}
+
 function billingRoutes() {
   const router = express.Router();
+
+  router.post('/shopier/webhook', async (req, res) => {
+    try {
+      const event = String(req.body?.event || req.body?.type || '').trim().toLowerCase();
+      const order = extractWebhookOrder(req.body);
+      const status = String(req.body?.status || extractWebhookOrder(req.body)?.status || '').trim().toLowerCase();
+
+      if (!order || (event && event !== 'order.created' && event !== 'order.fulfilled' && event !== 'order.updated')) {
+        return res.status(200).json({ ok: true, ignored: true });
+      }
+
+      const paidStatus = status || String(order?.status || order?.paymentStatus || '').trim().toLowerCase();
+      if (!isPaidStatus(paidStatus)) {
+        return res.status(200).json({ ok: true, ignored: true });
+      }
+
+      const db = readDb();
+      const email = extractOrderEmail(order);
+      const user = (db.users || []).find((item) => String(item.email || '').trim().toLowerCase() === email) || null;
+      const purchase = findMatchingPurchase({ db, order, user });
+
+      if (!purchase) {
+        return res.status(200).json({ ok: true, ignored: true, reason: 'purchase_not_found' });
+      }
+
+      if (purchase.status === 'paid' || purchase.status === 'redeemed') {
+        return res.status(200).json({ ok: true, ignored: true, reason: 'already_processed' });
+      }
+
+      const verification = {
+        orderId: extractOrderId(order),
+        amount: extractOrderAmount(order),
+        currency: extractOrderCurrency(order) || purchase.paymentCurrency,
+        paidAt: new Date().toISOString(),
+      };
+
+      await markPurchasePaid({ purchaseId: purchase.id, verification });
+      return res.status(200).json({ ok: true });
+    } catch (error) {
+      console.error('[shopier-webhook] failed', error);
+      return res.status(200).json({ ok: false });
+    }
+  });
+
   router.use(requireAuth);
 
   router.post('/quote', (req, res) => {
@@ -253,37 +341,7 @@ function billingRoutes() {
       return res.status(409).json({ message: verification.message });
     }
 
-    await updateDb((current) => {
-      const purchaseIndex = current.purchases.findIndex((item) => item.id === invoiceId);
-      if (purchaseIndex === -1) {
-        return current;
-      }
-
-      current.purchases[purchaseIndex] = {
-        ...current.purchases[purchaseIndex],
-        status: 'paid',
-        providerOrderId: verification.orderId,
-        providerPaidAt: verification.paidAt,
-        paymentAmount: verification.amount ?? current.purchases[purchaseIndex].paymentAmount,
-        paymentCurrency: verification.currency || current.purchases[purchaseIndex].paymentCurrency,
-      };
-
-      const existingCode = (current.redeemCodes || []).find((code) => code.purchaseId === invoiceId);
-      if (!existingCode) {
-        const code = generateRedeemCode();
-        current.redeemCodes.push({
-          id: `RDM-${randomUUID().slice(0, 8).toUpperCase()}`,
-          code,
-          purchaseId: invoiceId,
-          plan: current.purchases[purchaseIndex].plan,
-          accounts: current.purchases[purchaseIndex].accounts,
-          status: 'active',
-          createdAt: new Date().toISOString(),
-        });
-      }
-
-      return current;
-    });
+    await markPurchasePaid({ purchaseId: invoiceId, verification });
 
     const latestDb = readDb();
     const latestPurchase = latestDb.purchases.find((item) => item.id === invoiceId && item.userId === req.auth.user.id);
