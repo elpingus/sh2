@@ -19,18 +19,15 @@ const { referralRoutes } = require('./routes/referrals');
 const { publicRoutes } = require('./routes/public');
 const { reviewsRoutes } = require('./routes/reviews');
 const { ensureSeedAdmin } = require('./services/users');
-const { BoostEngine } = require('./services/boostEngine');
-const { WsGateway } = require('./services/wsGateway');
 const { setupSteamPassport } = require('./services/steamAuth');
-const { SteamBotManager } = require('./services/steamBotManager');
+const { WorkerClient } = require('./services/workerClient');
 
 async function bootstrap() {
   await ensureSeedAdmin();
 
   const app = express();
   const server = http.createServer(app);
-  const steamBotManager = new SteamBotManager();
-  const boostEngine = new BoostEngine(steamBotManager);
+  const workerClient = new WorkerClient();
 
   const configuredOrigins = [
     process.env.FRONTEND_URL,
@@ -77,16 +74,28 @@ async function bootstrap() {
   app.use(passport.initialize());
   app.use(passport.session());
 
-  app.get('/health', (_req, res) => {
-    res.json({ ok: true, service: 'steamboost-api', timestamp: new Date().toISOString() });
+  app.get('/health', async (_req, res) => {
+    let worker = { ok: false };
+    try {
+      worker = await workerClient.health();
+    } catch (_error) {
+      worker = { ok: false };
+    }
+
+    res.json({
+      ok: true,
+      service: 'steamboost-api',
+      workerOk: Boolean(worker?.ok),
+      timestamp: new Date().toISOString(),
+    });
   });
 
   app.use('/auth', authRoutes);
   app.use('/games', gamesRoutes);
-  app.use('/settings', settingsRoutes(steamBotManager));
+  app.use('/settings', settingsRoutes(workerClient));
   app.use('/account', accountRoutes);
-  app.use('/steam', steamRoutes(steamBotManager));
-  app.use('/boost', boostRoutes(boostEngine));
+  app.use('/steam', steamRoutes(workerClient));
+  app.use('/boost', boostRoutes(workerClient));
   app.use('/admin', adminRoutes());
   app.use('/billing', billingRoutes());
   app.use('/referrals', referralRoutes());
@@ -95,19 +104,17 @@ async function bootstrap() {
 
   app.use((err, _req, res, _next) => {
     console.error(err);
-    res.status(500).json({ message: 'Internal server error' });
+    res.status(err?.statusCode || 500).json({ message: err?.message || 'Internal server error' });
   });
-
-  new WsGateway(server, boostEngine);
 
   const port = Number(process.env.PORT || 8787);
   server.listen(port, async () => {
     console.log(`[api] listening on http://localhost:${port}`);
     try {
-      await boostEngine.recoverActiveJobs();
-      console.log('[api] boost recovery completed');
+      const health = await workerClient.health();
+      console.log(`[api] worker health: ${health?.ok ? 'ok' : 'unavailable'}`);
     } catch (error) {
-      console.error('[api] boost recovery failed', error);
+      console.error('[api] worker health failed', error);
     }
   });
 }

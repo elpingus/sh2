@@ -40,32 +40,35 @@ function getDisplayModeLabel(displayMode) {
   }
 }
 
+function mapDisplayModeToUIMode(displayMode) {
+  switch (displayMode) {
+    case 'big_picture':
+      return SteamUser.EClientUIMode.BigPicture;
+    case 'mobile':
+      return SteamUser.EClientUIMode.Mobile;
+    default:
+      return SteamUser.EClientUIMode.None;
+  }
+}
+
 function buildCustomPresence(settings, plan) {
   const displayMode = settings?.displayMode || 'normal';
   const modeLabel = getDisplayModeLabel(displayMode);
+  const unsupportedModeLabel = displayMode === 'vr' || displayMode === 'play_together'
+    ? ` [${modeLabel}]`
+    : '';
   if (plan === 'free') {
-    return displayMode === 'normal'
-      ? 'ste**hoursnet.xyz'
-      : `ste**hoursnet.xyz [${modeLabel}]`;
+    return `ste**hoursnet.xyz${unsupportedModeLabel}`;
   }
 
   const hasCustomTitle = settings?.customTitleEnabled && settings?.customTitle;
   const baseTitle = hasCustomTitle ? String(settings.customTitle) : 'Steam User';
-
-  if (displayMode === 'normal') {
-    return hasCustomTitle ? baseTitle : null;
-  }
-
-  return `${baseTitle} [${modeLabel}]`;
+  return hasCustomTitle ? `${baseTitle}${unsupportedModeLabel}` : (unsupportedModeLabel ? `Steam User${unsupportedModeLabel}` : null);
 }
 
-function buildGamesPlayedPayload(appIds, customTitle, displayMode) {
+function buildGamesPlayedPayload(appIds, customTitle) {
   const ids = Array.isArray(appIds) ? appIds : [];
   const payload = ids.map((id) => ({ game_id: id }));
-
-  if (displayMode === 'vr' && !ids.includes(250820)) {
-    payload.unshift({ game_id: 250820 });
-  }
 
   if (customTitle) {
     if (payload.length > 0) {
@@ -118,6 +121,7 @@ class SteamBotManager extends EventEmitter {
       waitResolve: null,
       latestUserSnapshot: null,
       latestAccountSnapshot: null,
+      lastUIMode: SteamUser.EClientUIMode.None,
     };
 
     const settleWait = (result) => {
@@ -409,6 +413,7 @@ class SteamBotManager extends EventEmitter {
 
       const persona = mapPersonaState(user.settings?.appearance || 'online');
       session.client.setPersona(persona);
+      this.applySessionDisplayMode(session, user.settings || {});
 
       if (Array.isArray(session.currentGames) && session.currentGames.length > 0) {
         const accountGames = Array.isArray(session.latestAccountSnapshot?.games) && session.latestAccountSnapshot.games.length > 0
@@ -416,6 +421,18 @@ class SteamBotManager extends EventEmitter {
           : (user.games || []);
         this.playGames(user.id, session.accountId, accountGames, user.settings || {}, user.plan);
       }
+    }
+  }
+
+  applySessionDisplayMode(session, settings) {
+    const uiMode = mapDisplayModeToUIMode(settings?.displayMode || 'normal');
+    if (session.lastUIMode === uiMode) return;
+
+    try {
+      session.client.setUIMode(uiMode);
+      session.lastUIMode = uiMode;
+    } catch (_error) {
+      // Ignore unsupported UI mode updates.
     }
   }
 
@@ -427,9 +444,8 @@ class SteamBotManager extends EventEmitter {
 
     const appIds = (games || []).map((g) => Number(g.appId)).filter((n) => Number.isFinite(n) && n > 0);
     const plan = userPlan || session.latestUserSnapshot?.plan;
-    const displayMode = settings?.displayMode || 'normal';
     const customPresence = buildCustomPresence(settings, plan);
-    const payload = buildGamesPlayedPayload(appIds, customPresence, displayMode);
+    const payload = buildGamesPlayedPayload(appIds, customPresence);
 
     session.latestUserSnapshot = {
       ...(session.latestUserSnapshot || {}),
@@ -437,6 +453,7 @@ class SteamBotManager extends EventEmitter {
       plan,
     };
     session.currentGames = appIds;
+    this.applySessionDisplayMode(session, settings || {});
     session.client.gamesPlayed(payload);
     return { ok: true };
   }

@@ -5,7 +5,7 @@ const { sanitizeUser } = require('../lib/auth');
 const { logAuditFromRequest } = require('../services/auditLog');
 const { enforcePlanSettings } = require('../lib/planFeatures');
 
-function settingsRoutes(steamBotManager) {
+function settingsRoutes(workerClient) {
   const router = express.Router();
 
   router.get('/', requireAuth, async (req, res) => {
@@ -31,8 +31,12 @@ function settingsRoutes(steamBotManager) {
     Object.assign(nextSettings, enforcePlanSettings(req.auth.user.plan, nextSettings));
 
     const updated = await patchUser(req.auth.user.id, { settings: nextSettings });
-    if (steamBotManager) {
-      steamBotManager.applySettings(updated);
+    if (workerClient) {
+      try {
+        await workerClient.applySettings(updated.id);
+      } catch (_error) {
+        // Worker may be unavailable briefly during deploy. Persisted settings remain source of truth.
+      }
     }
     await logAuditFromRequest(req, {
       action: 'settings_update',

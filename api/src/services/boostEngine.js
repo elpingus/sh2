@@ -1,6 +1,47 @@
 const { EventEmitter } = require('events');
 const { readDb, updateDb } = require('../lib/db');
 
+function classifyConnectionFailure(result) {
+  if (result?.type === 'guard_required') return 'guard_required';
+
+  const message = String(result?.message || '').toLowerCase();
+  if (
+    message.includes('credential')
+    || message.includes('password')
+    || message.includes('logon')
+    || message.includes('login')
+    || message.includes('session')
+    || result?.type === 'timeout'
+  ) {
+    return 'relogin_required';
+  }
+
+  return 'error';
+}
+
+function buildRecoveryFailurePatch(status, currentStats, startedIds) {
+  const state = status === 'guard_required'
+    ? 'guard_required'
+    : status === 'relogin_required'
+      ? 'relogin_required'
+      : 'error';
+
+  const error = status === 'guard_required'
+    ? 'Steam Guard code is required to resume boosting.'
+    : status === 'relogin_required'
+      ? 'Steam session expired. Please relogin your account.'
+      : 'All Steam sessions are disconnected.';
+
+  return {
+    state,
+    error,
+    runningAccounts: 0,
+    startedAccountIds: startedIds,
+    currentGames: [],
+    accountStats: currentStats,
+  };
+}
+
 class BoostEngine extends EventEmitter {
   constructor(steamBotManager) {
     super();
@@ -52,6 +93,24 @@ class BoostEngine extends EventEmitter {
     return nextStats;
   }
 
+  markAccountStatsStopped(currentStats = {}, accountIds = null) {
+    const nextStats = { ...currentStats };
+    const targetIds = Array.isArray(accountIds)
+      ? accountIds.map((id) => String(id))
+      : Object.keys(nextStats);
+
+    for (const accountId of targetIds) {
+      if (!nextStats[accountId]) continue;
+      nextStats[accountId] = {
+        uptimeSeconds: Number(nextStats[accountId]?.uptimeSeconds) || 0,
+        boostedMinutes: Number(nextStats[accountId]?.boostedMinutes) || 0,
+        isPlaying: false,
+      };
+    }
+
+    return nextStats;
+  }
+
   buildCurrentGames(user, startedAccountIds) {
     const allAccounts = Array.isArray(user?.steamAccounts) ? user.steamAccounts : [];
     const fallbackGames = Array.isArray(user?.games) ? user.games : [];
@@ -78,18 +137,40 @@ class BoostEngine extends EventEmitter {
     const accounts = Array.isArray(user?.steamAccounts) ? user.steamAccounts.slice(0, slots) : [];
     const targetIds = new Set((startedAccountIds || []).map((id) => String(id)));
     const connectedIds = [];
+    const failures = [];
 
     for (const account of accounts) {
       if (!targetIds.has(String(account.id))) continue;
       const connectResult = await this.steamBotManager.connect(user, account);
-      if (connectResult.type !== 'connected') continue;
+      if (connectResult.type !== 'connected') {
+        failures.push({
+          accountId: String(account.id),
+          type: classifyConnectionFailure(connectResult),
+          message: connectResult.message || null,
+        });
+        continue;
+      }
 
       const fallbackGames = Array.isArray(user.games) ? user.games : [];
       const accountGames = Array.isArray(account.games) && account.games.length > 0 ? account.games : fallbackGames;
-      if (accountGames.length === 0) continue;
+      if (accountGames.length === 0) {
+        failures.push({
+          accountId: String(account.id),
+          type: 'error',
+          message: `No games selected for ${account.username}.`,
+        });
+        continue;
+      }
 
       const licenseResult = await this.steamBotManager.ensureFreeGameLicenses(user.id, account.id, accountGames);
-      if (!licenseResult.ok) continue;
+      if (!licenseResult.ok) {
+        failures.push({
+          accountId: String(account.id),
+          type: 'error',
+          message: licenseResult.message,
+        });
+        continue;
+      }
 
       const playResult = this.steamBotManager.playGames(
         user.id,
@@ -98,11 +179,21 @@ class BoostEngine extends EventEmitter {
         user.settings || {},
         user.plan
       );
-      if (!playResult.ok) continue;
+      if (!playResult.ok) {
+        failures.push({
+          accountId: String(account.id),
+          type: 'error',
+          message: playResult.message,
+        });
+        continue;
+      }
       connectedIds.push(String(account.id));
     }
 
-    return connectedIds;
+    return {
+      connectedIds,
+      failures,
+    };
   }
 
   async startSingleAccount(user, accountId) {
@@ -141,13 +232,13 @@ class BoostEngine extends EventEmitter {
     const connection = await this.steamBotManager.connect(user, account);
     if (connection.type === 'guard_required') {
       return this.persistStatus(user.id, {
-        state: startedIds.length > 0 ? 'started' : 'error',
+        state: startedIds.length > 0 ? 'started' : 'guard_required',
         error: `Steam Guard code required for account ${account.username}.`,
       });
     }
     if (connection.type !== 'connected') {
       return this.persistStatus(user.id, {
-        state: startedIds.length > 0 ? 'started' : 'error',
+        state: startedIds.length > 0 ? 'started' : classifyConnectionFailure(connection),
         error: connection.message || `Steam connection failed for ${account.username}.`,
       });
     }
@@ -220,27 +311,32 @@ class BoostEngine extends EventEmitter {
       const startedIds = this.normalizeStartedIds(status);
       if (startedIds.length <= 0) continue;
 
-      const connectedIds = await this.reconnectStartedAccounts(user, startedIds);
-      if (connectedIds.length > 0) {
-        const currentGames = this.buildCurrentGames(user, connectedIds);
+      await this.persistStatus(user.id, {
+        state: 'recovering',
+        error: null,
+      });
+
+      const reconnectResult = await this.reconnectStartedAccounts(user, startedIds);
+      if (reconnectResult.connectedIds.length > 0) {
+        const currentGames = this.buildCurrentGames(user, reconnectResult.connectedIds);
         await this.persistStatus(user.id, {
           state: 'started',
           error: null,
-          startedAccountIds: connectedIds,
-          runningAccounts: connectedIds.length,
+          startedAccountIds: reconnectResult.connectedIds,
+          runningAccounts: reconnectResult.connectedIds.length,
           currentGames,
-          accountStats: this.createAccountStatsPatch(connectedIds, this.normalizeAccountStats(status)),
+          accountStats: this.createAccountStatsPatch(reconnectResult.connectedIds, this.normalizeAccountStats(status)),
         });
         this.beginTick(user.id);
       } else {
-        await this.persistStatus(user.id, {
-          state: 'error',
-          error: 'All Steam sessions are disconnected. Please relogin your accounts.',
-          runningAccounts: 0,
-          startedAccountIds: [],
-          currentGames: [],
-          accountStats: {},
-        });
+        const currentStats = this.markAccountStatsStopped(this.normalizeAccountStats(status));
+        const failureTypes = reconnectResult.failures.map((entry) => entry.type);
+        const dominantFailure = failureTypes.includes('guard_required')
+          ? 'guard_required'
+          : failureTypes.includes('relogin_required')
+            ? 'relogin_required'
+            : 'error';
+        await this.persistStatus(user.id, buildRecoveryFailurePatch(dominantFailure, currentStats, startedIds));
       }
     }
   }
@@ -272,7 +368,7 @@ class BoostEngine extends EventEmitter {
     const current = this.getStatus(user.id);
     const startedIds = this.normalizeStartedIds(current).filter((id) => id !== String(accountId));
     const currentStats = this.normalizeAccountStats(current);
-    const { [String(accountId)]: _removed, ...remainingAccountStats } = currentStats;
+    const remainingAccountStats = this.markAccountStatsStopped(currentStats, [accountId]);
 
     this.steamBotManager.stopGames(user.id, String(accountId));
 
@@ -283,7 +379,7 @@ class BoostEngine extends EventEmitter {
         runningAccounts: 0,
         startedAccountIds: [],
         currentGames: [],
-        accountStats: {},
+        accountStats: remainingAccountStats,
       });
     }
 
@@ -321,27 +417,38 @@ class BoostEngine extends EventEmitter {
         .filter((accountId) => startedAccountIds.includes(String(accountId)));
       let activePlayingAccounts = activeStartedIds.length;
       if (activePlayingAccounts <= 0) {
-        const recoveredIds = await this.reconnectStartedAccounts(user, startedAccountIds);
-        activePlayingAccounts = recoveredIds.length;
+        await this.persistStatus(userId, {
+          state: 'recovering',
+          error: null,
+        });
+
+        const reconnectResult = await this.reconnectStartedAccounts(user, startedAccountIds);
+        activePlayingAccounts = reconnectResult.connectedIds.length;
         if (activePlayingAccounts > 0) {
-          activeStartedIds = recoveredIds;
+          activeStartedIds = reconnectResult.connectedIds;
           await this.persistStatus(userId, {
             state: 'started',
             error: null,
-            startedAccountIds: recoveredIds,
+            startedAccountIds: reconnectResult.connectedIds,
             runningAccounts: activePlayingAccounts,
-            currentGames: this.buildCurrentGames(user, recoveredIds),
-            accountStats: this.createAccountStatsPatch(recoveredIds, this.normalizeAccountStats(status)),
+            currentGames: this.buildCurrentGames(user, reconnectResult.connectedIds),
+            accountStats: this.createAccountStatsPatch(reconnectResult.connectedIds, this.normalizeAccountStats(status)),
           });
         } else {
-          await this.persistStatus(userId, {
-            state: 'error',
-            error: 'All Steam sessions are disconnected. Please relogin your accounts.',
-            runningAccounts: 0,
-            startedAccountIds: [],
-            currentGames: [],
-            accountStats: {},
-          });
+          const failureTypes = reconnectResult.failures.map((entry) => entry.type);
+          const dominantFailure = failureTypes.includes('guard_required')
+            ? 'guard_required'
+            : failureTypes.includes('relogin_required')
+              ? 'relogin_required'
+              : 'error';
+          await this.persistStatus(
+            userId,
+            buildRecoveryFailurePatch(
+              dominantFailure,
+              this.markAccountStatsStopped(this.normalizeAccountStats(status)),
+              startedAccountIds
+            )
+          );
           this.stopTick(userId);
           return;
         }
@@ -403,7 +510,7 @@ class BoostEngine extends EventEmitter {
           runningAccounts: 0,
           startedAccountIds: [],
           currentGames: [],
-          accountStats: {},
+          accountStats: this.markAccountStatsStopped(this.normalizeAccountStats(this.getStatus(userId))),
         });
         this.stopTick(userId);
       }
@@ -423,13 +530,25 @@ class BoostEngine extends EventEmitter {
   async pause(userId) {
     this.stopTick(userId);
     this.steamBotManager.stopGames(userId);
-    return this.persistStatus(userId, { state: 'paused', runningAccounts: 0, startedAccountIds: [], currentGames: [], accountStats: {} });
+    return this.persistStatus(userId, {
+      state: 'paused',
+      runningAccounts: 0,
+      startedAccountIds: [],
+      currentGames: [],
+      accountStats: this.markAccountStatsStopped(this.normalizeAccountStats(this.getStatus(userId))),
+    });
   }
 
   async stop(userId) {
     this.stopTick(userId);
     this.steamBotManager.stopGames(userId);
-    return this.persistStatus(userId, { state: 'stopped', runningAccounts: 0, startedAccountIds: [], currentGames: [], accountStats: {} });
+    return this.persistStatus(userId, {
+      state: 'stopped',
+      runningAccounts: 0,
+      startedAccountIds: [],
+      currentGames: [],
+      accountStats: this.markAccountStatsStopped(this.normalizeAccountStats(this.getStatus(userId))),
+    });
   }
 }
 

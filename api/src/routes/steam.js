@@ -48,7 +48,7 @@ async function patchAccountGames(user, accountId, updater) {
   return updated;
 }
 
-function steamRoutes(steamBotManager) {
+function steamRoutes(workerClient) {
   const router = express.Router();
 
   router.get('/search', requireAuth, async (req, res) => {
@@ -100,11 +100,26 @@ function steamRoutes(steamBotManager) {
       userSnapshot = updated || userSnapshot;
     }
 
+    let stateMap = {};
+    try {
+      const payload = await workerClient.getSteamStates(userSnapshot.id);
+      stateMap = payload?.states || {};
+    } catch (_error) {
+      stateMap = {};
+    }
+
     const slots = Math.max(1, Number(userSnapshot.steamAccountSlots) || 1);
     const accounts = (userSnapshot.steamAccounts || [])
       .slice(0, slots)
       .map((account) => {
-        const state = steamBotManager.getConnectionState(userSnapshot.id, account.id);
+        const state = stateMap[String(account.id)] || {
+          connected: false,
+          loggingIn: false,
+          guardRequired: false,
+          guardDomain: null,
+          lastCodeWrong: false,
+          error: null,
+        };
         return {
           ...sanitizeAccount(account),
           connected: Boolean(state.connected),
@@ -146,8 +161,9 @@ function steamRoutes(steamBotManager) {
     let connectResult = null;
 
     if (connectNow) {
-      connectResult = await steamBotManager.connect(updated, savedAccount);
-      await patchAccountConnection(updated, savedAccount.id, connectResult.type === 'connected');
+      const payload = await workerClient.connectSteam(updated.id, savedAccount.id);
+      connectResult = payload.result;
+      await patchAccountConnection(updated, savedAccount.id, connectResult.status === 'connected');
     }
 
     await logAuditFromRequest(req, {
@@ -157,7 +173,7 @@ function steamRoutes(steamBotManager) {
       meta: {
         username: account.username,
         totalAccounts: accounts.length,
-        connectStatus: connectResult?.type || 'not_requested',
+        connectStatus: connectResult?.status || 'not_requested',
       },
     });
 
@@ -173,7 +189,7 @@ function steamRoutes(steamBotManager) {
     const accountId = String(req.params.accountId);
     const accounts = (user.steamAccounts || []).filter((a) => a.id !== accountId);
 
-    steamBotManager.disconnect(user.id, accountId);
+    await workerClient.disconnectSteam(user.id, accountId);
 
     const updated = await patchUser(user.id, {
       steamAccounts: accounts,
@@ -259,7 +275,10 @@ function steamRoutes(steamBotManager) {
 
   router.get('/status/:accountId', requireAuth, (req, res) => {
     const accountId = String(req.params.accountId);
-    return res.json({ state: steamBotManager.getConnectionState(req.auth.user.id, accountId) });
+    return workerClient
+      .getSteamState(req.auth.user.id, accountId)
+      .then((payload) => res.json({ state: payload.state }))
+      .catch((error) => res.status(503).json({ message: error.message }));
   });
 
   router.post('/connect/start/:accountId', requireAuth, async (req, res) => {
@@ -268,15 +287,16 @@ function steamRoutes(steamBotManager) {
     const account = (user.steamAccounts || []).find((a) => a.id === accountId);
     if (!account) return res.status(404).json({ message: 'Steam account not found' });
 
-    const result = await steamBotManager.connect(user, account);
-    await patchAccountConnection(user, account.id, result.type === 'connected');
+    const payload = await workerClient.connectSteam(user.id, account.id);
+    const result = payload.result;
+    await patchAccountConnection(user, account.id, result.status === 'connected');
     await logAuditFromRequest(req, {
       action: 'steam_connect_start',
       targetType: 'steam_account',
       targetId: account.id,
-      meta: { status: result.type, domain: result.domain || null },
+      meta: { status: result.status, domain: result.domain || null },
     });
-    return res.json({ result: toClientResult(result) });
+    return res.json({ result });
   });
 
   router.post('/connect/guard/:accountId', requireAuth, async (req, res) => {
@@ -285,23 +305,24 @@ function steamRoutes(steamBotManager) {
     if (!code) return res.status(400).json({ message: 'Steam Guard code is required' });
 
     const normalizedCode = String(code).trim().toUpperCase();
-    const result = await steamBotManager.submitGuardCode(req.auth.user.id, accountId, normalizedCode);
+    const payload = await workerClient.submitGuardCode(req.auth.user.id, accountId, normalizedCode);
+    const result = payload.result;
     const user = getUserById(req.auth.user.id);
     if (user) {
-      await patchAccountConnection(user, accountId, result.type === 'connected');
+      await patchAccountConnection(user, accountId, result.status === 'connected');
     }
     await logAuditFromRequest(req, {
       action: 'steam_connect_guard_submit',
       targetType: 'steam_account',
       targetId: accountId,
-      meta: { status: result.type, domain: result.domain || null },
+      meta: { status: result.status, domain: result.domain || null },
     });
-    return res.json({ result: toClientResult(result) });
+    return res.json({ result });
   });
 
   router.post('/disconnect/:accountId', requireAuth, async (req, res) => {
     const accountId = String(req.params.accountId);
-    steamBotManager.disconnect(req.auth.user.id, accountId);
+    await workerClient.disconnectSteam(req.auth.user.id, accountId);
     const user = getUserById(req.auth.user.id);
     if (user) {
       await patchAccountConnection(user, accountId, false);

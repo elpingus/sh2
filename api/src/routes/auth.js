@@ -94,7 +94,15 @@ router.post('/register', async (req, res) => {
     let referredBy = null;
     if (referralCode) {
       const ref = require('../lib/db').readDb().users.find((u) => u.referralCode === String(referralCode).trim().toUpperCase());
-      if (ref && isReferralEligible(ref, { id: 'pending', referredBy: ref.id, referralSourceIp: requestIp, ipAddresses: [requestIp], lastLoginIp: requestIp })) {
+      if (ref && isReferralEligible(ref, {
+        id: 'pending',
+        referredBy: ref.id,
+        referralSourceIp: requestIp,
+        ipAddresses: [requestIp],
+        lastLoginIp: requestIp,
+        lastDevice: device,
+        loginHistory: [{ device }],
+      })) {
         referredBy = ref.id;
       }
     }

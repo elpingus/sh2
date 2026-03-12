@@ -4,17 +4,17 @@ const { sanitizeUser } = require('../lib/auth');
 const { getUserById } = require('../services/users');
 const { logAuditFromRequest } = require('../services/auditLog');
 
-function boostRoutes(boostEngine) {
+function boostRoutes(workerClient) {
   const router = express.Router();
 
-  router.get('/status', requireAuth, (req, res) => {
-    const status = boostEngine.getStatus(req.auth.user.id);
+  router.get('/status', requireAuth, async (req, res) => {
+    const { status } = await workerClient.getBoostStatus(req.auth.user.id);
     return res.json({ status });
   });
 
   router.post('/start', requireAuth, async (req, res) => {
     const freshUser = getUserById(req.auth.user.id);
-    const status = await boostEngine.start(freshUser);
+    const { status } = await workerClient.startBoost(freshUser.id);
     await logAuditFromRequest(req, {
       action: 'boost_start_all',
       targetType: 'user',
@@ -27,7 +27,7 @@ function boostRoutes(boostEngine) {
   router.post('/start-account/:accountId', requireAuth, async (req, res) => {
     const freshUser = getUserById(req.auth.user.id);
     const accountId = String(req.params.accountId);
-    const status = await boostEngine.startAccount(freshUser, accountId);
+    const { status } = await workerClient.startBoostAccount(freshUser.id, accountId);
     await logAuditFromRequest(req, {
       action: 'boost_start_account',
       targetType: 'steam_account',
@@ -40,7 +40,7 @@ function boostRoutes(boostEngine) {
   router.post('/stop-account/:accountId', requireAuth, async (req, res) => {
     const freshUser = getUserById(req.auth.user.id);
     const accountId = String(req.params.accountId);
-    const status = await boostEngine.stopAccount(freshUser, accountId);
+    const { status } = await workerClient.stopBoostAccount(freshUser.id, accountId);
     await logAuditFromRequest(req, {
       action: 'boost_stop_account',
       targetType: 'steam_account',
@@ -51,7 +51,7 @@ function boostRoutes(boostEngine) {
   });
 
   router.post('/pause', requireAuth, async (req, res) => {
-    const status = await boostEngine.pause(req.auth.user.id);
+    const { status } = await workerClient.pauseBoost(req.auth.user.id);
     await logAuditFromRequest(req, {
       action: 'boost_pause',
       targetType: 'user',
@@ -62,7 +62,7 @@ function boostRoutes(boostEngine) {
   });
 
   router.post('/stop', requireAuth, async (req, res) => {
-    const status = await boostEngine.stop(req.auth.user.id);
+    const { status } = await workerClient.stopBoost(req.auth.user.id);
     await logAuditFromRequest(req, {
       action: 'boost_stop_all',
       targetType: 'user',

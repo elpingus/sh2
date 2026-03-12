@@ -6,7 +6,9 @@
   "type": "commonjs",
   "scripts": {
     "dev": "node --watch src/server.js",
+    "dev:worker": "node --watch src/workerServer.js",
     "start": "node src/server.js",
+    "start:worker": "node src/workerServer.js",
     "lint": "node -e \"console.log('No lint configured')\""
   },
   "dependencies": {

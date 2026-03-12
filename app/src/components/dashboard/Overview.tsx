@@ -25,7 +25,7 @@ import {
   KeyRound,
 } from 'lucide-react';
 import SteamConnectModal from '@/components/SteamConnectModal';
-import { apiRequest, API_URL, getToken } from '@/lib/api';
+import { apiRequest } from '@/lib/api';
 import { toast } from 'sonner';
 import { useAuth } from '@/contexts/AuthContext';
 import { planDisplayName } from '@/lib/planNames';
@@ -39,7 +39,7 @@ interface SteamGame {
 }
 
 interface BoostStatus {
-  state: 'starting' | 'started' | 'paused' | 'stopped' | 'error';
+  state: 'starting' | 'started' | 'paused' | 'stopped' | 'error' | 'recovering' | 'guard_required' | 'relogin_required';
   uptimeSeconds: number;
   totalBoostedMinutes: number;
   currentGames: SteamGame[];
@@ -72,6 +72,44 @@ interface SteamAccount {
 interface OverviewProps {
   onOpenBoostSettings?: () => void;
 }
+
+const recoveryStateLabels = {
+  en: {
+    recovering: 'Recovering',
+    guard_required: 'Guard Required',
+    relogin_required: 'Relogin Required',
+  },
+  tr: {
+    recovering: 'Toparlaniyor',
+    guard_required: 'Guard Gerekli',
+    relogin_required: 'Yeniden Giris Gerekli',
+  },
+  de: {
+    recovering: 'Wird wiederhergestellt',
+    guard_required: 'Guard erforderlich',
+    relogin_required: 'Neu anmelden',
+  },
+  es: {
+    recovering: 'Recuperando',
+    guard_required: 'Guard requerido',
+    relogin_required: 'Se requiere nuevo inicio',
+  },
+  pt: {
+    recovering: 'Recuperando',
+    guard_required: 'Guard necessario',
+    relogin_required: 'Relogin necessario',
+  },
+  pl: {
+    recovering: 'Przywracanie',
+    guard_required: 'Wymagany Guard',
+    relogin_required: 'Wymagane ponowne logowanie',
+  },
+  ru: {
+    recovering: 'Reconnecting',
+    guard_required: 'Guard Required',
+    relogin_required: 'Relogin Required',
+  },
+} as const;
 
 const overviewCopy = {
   en: {
@@ -406,6 +444,33 @@ function accountStateClass(account: SteamAccount, accountRunning = false) {
   return 'text-slate-400';
 }
 
+function getBoostStateLabel(
+  state: BoostStatus['state'],
+  copy: OverviewCopy,
+  language: keyof typeof recoveryStateLabels = 'en'
+) {
+  const recoveryLabels = recoveryStateLabels[language] || recoveryStateLabels.en;
+  switch (state) {
+    case 'starting':
+      return copy.statusStarting;
+    case 'started':
+      return copy.statusStarted;
+    case 'paused':
+      return copy.statusPaused;
+    case 'recovering':
+      return recoveryLabels.recovering;
+    case 'guard_required':
+      return recoveryLabels.guard_required;
+    case 'relogin_required':
+      return recoveryLabels.relogin_required;
+    case 'error':
+      return copy.statusError;
+    case 'stopped':
+    default:
+      return copy.statusStopped;
+  }
+}
+
 export default function Overview({ onOpenBoostSettings }: OverviewProps) {
   const { t, i18n } = useTranslation();
   const [status, setStatus] = useState<BoostStatus>(defaultStatus);
@@ -427,7 +492,8 @@ export default function Overview({ onOpenBoostSettings }: OverviewProps) {
   const [gamesSaving, setGamesSaving] = useState(false);
   const navigate = useNavigate();
   const { user, refreshUser } = useAuth();
-  const copy = overviewCopy[(i18n.resolvedLanguage || i18n.language || 'en').split('-')[0] as keyof typeof overviewCopy] || overviewCopy.en;
+  const languageKey = ((i18n.resolvedLanguage || i18n.language || 'en').split('-')[0] as keyof typeof overviewCopy);
+  const copy = overviewCopy[languageKey] || overviewCopy.en;
 
   const isRunning = status.state === 'started' || status.state === 'starting';
   const isLifetime = isLifetimePlan(user?.hoursLeft, user?.plan);
@@ -460,23 +526,27 @@ export default function Overview({ onOpenBoostSettings }: OverviewProps) {
     [copy.timeLeftUnit, isLifetime, status, t, user?.hoursLeft, user?.totalHoursBoosted]
   );
 
-  const loadStatus = async () => {
+  const loadStatus = async ({ silent = false } = {}) => {
     try {
       const payload = await apiRequest<{ status: BoostStatus }>('/boost/status');
       setStatus(payload.status || defaultStatus);
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : 'Failed to load boost status');
+      if (!silent) {
+        toast.error(error instanceof Error ? error.message : 'Failed to load boost status');
+      }
     } finally {
       setLoading(false);
     }
   };
 
-  const loadAccounts = async () => {
+  const loadAccounts = async ({ silent = false } = {}) => {
     try {
       const payload = await apiRequest<{ accounts: SteamAccount[] }>('/steam/accounts');
       setAccounts(payload.accounts || []);
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : 'Failed to load steam accounts');
+      if (!silent) {
+        toast.error(error instanceof Error ? error.message : 'Failed to load steam accounts');
+      }
     }
   };
 
@@ -496,23 +566,12 @@ export default function Overview({ onOpenBoostSettings }: OverviewProps) {
   }, [steamSetupOpen]);
 
   useEffect(() => {
-    const token = getToken();
-    if (!token) return;
+    const interval = window.setInterval(() => {
+      void loadStatus({ silent: true });
+      void loadAccounts({ silent: true });
+    }, 5000);
 
-    const wsBase = API_URL.replace('http://', 'ws://').replace('https://', 'wss://');
-    const ws = new WebSocket(`${wsBase}/ws?token=${encodeURIComponent(token)}`);
-    ws.onmessage = (event) => {
-      try {
-        const message = JSON.parse(event.data) as { type: string; payload?: BoostStatus };
-        if (message.type === 'boost:status' && message.payload) {
-          setStatus(message.payload);
-        }
-      } catch {
-        // Ignore malformed messages.
-      }
-    };
-
-    return () => ws.close();
+    return () => window.clearInterval(interval);
   }, []);
 
   useEffect(() => {
@@ -723,16 +782,14 @@ export default function Overview({ onOpenBoostSettings }: OverviewProps) {
     }
   };
 
-  const badgeLabel =
-    status.state === 'starting' ? copy.statusStarting
-      : status.state === 'started' ? copy.statusStarted
-      : status.state === 'error' ? copy.statusError
-      : status.state === 'paused' ? copy.statusPaused
-      : copy.statusStopped;
+  const badgeLabel = getBoostStateLabel(status.state, copy, languageKey);
 
   const badgeClass =
     status.state === 'starting' ? 'bg-amber-500/20 text-amber-400'
       : status.state === 'started' ? 'bg-green-500/20 text-green-400'
+      : status.state === 'recovering' ? 'bg-sky-500/20 text-sky-300'
+      : status.state === 'guard_required' ? 'bg-orange-500/20 text-orange-300'
+      : status.state === 'relogin_required' ? 'bg-red-500/20 text-red-300'
       : status.state === 'error' ? 'bg-red-500/20 text-red-400'
       : status.state === 'paused' ? 'bg-blue-500/20 text-blue-400'
       : 'bg-slate-500/20 text-slate-400';
@@ -761,7 +818,7 @@ export default function Overview({ onOpenBoostSettings }: OverviewProps) {
               <Plus className="w-4 h-4 mr-1" />
               {copy.addAccount}
             </Button>
-            <div className={`w-2 h-2 rounded-full ${status.state === 'started' ? 'bg-green-500' : status.state === 'starting' ? 'bg-amber-400' : status.state === 'error' ? 'bg-red-500' : 'bg-slate-500'}`} />
+            <div className={`w-2 h-2 rounded-full ${status.state === 'started' ? 'bg-green-500' : status.state === 'starting' ? 'bg-amber-400' : status.state === 'recovering' ? 'bg-sky-400' : status.state === 'guard_required' ? 'bg-orange-400' : status.state === 'relogin_required' || status.state === 'error' ? 'bg-red-500' : 'bg-slate-500'}`} />
             <span className="font-semibold text-white">{badgeLabel}</span>
           </div>
           <div className="flex items-center gap-2">
