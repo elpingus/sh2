@@ -498,6 +498,16 @@ export default function Overview({ onOpenBoostSettings }: OverviewProps) {
   const isRunning = status.state === 'started' || status.state === 'starting';
   const isLifetime = isLifetimePlan(user?.hoursLeft, user?.plan);
 
+  const syncGuardModal = (nextAccounts: SteamAccount[]) => {
+    if (guardOpen) return;
+    const pendingGuard = nextAccounts.find((account) => account.state?.guardRequired);
+    if (!pendingGuard) return;
+    setGuardAccountId(pendingGuard.id);
+    setGuardDomain(pendingGuard.state?.guardDomain || null);
+    setGuardCode('');
+    setGuardOpen(true);
+  };
+
   const stats = useMemo(
     () => [
       {
@@ -542,7 +552,9 @@ export default function Overview({ onOpenBoostSettings }: OverviewProps) {
   const loadAccounts = async ({ silent = false } = {}) => {
     try {
       const payload = await apiRequest<{ accounts: SteamAccount[] }>('/steam/accounts');
-      setAccounts(payload.accounts || []);
+      const nextAccounts = payload.accounts || [];
+      setAccounts(nextAccounts);
+      syncGuardModal(nextAccounts);
     } catch (error) {
       if (!silent) {
         toast.error(error instanceof Error ? error.message : 'Failed to load steam accounts');
@@ -600,8 +612,11 @@ export default function Overview({ onOpenBoostSettings }: OverviewProps) {
       const payload = await apiRequest<{ status: BoostStatus }>('/boost/start', { method: 'POST' });
       setStatus(payload.status);
       await refreshUser();
+      await loadAccounts({ silent: true });
       if (payload.status.state === 'error' && payload.status.error) {
         toast.error(payload.status.error);
+      } else if (payload.status.state === 'guard_required') {
+        toast.error('Steam Guard required');
       } else {
         toast.success('Start all sent');
       }
@@ -644,8 +659,11 @@ export default function Overview({ onOpenBoostSettings }: OverviewProps) {
       const payload = await apiRequest<{ status: BoostStatus }>(`/boost/start-account/${accountId}`, { method: 'POST' });
       setStatus(payload.status);
       await refreshUser();
+      await loadAccounts({ silent: true });
       if (payload.status.state === 'error' && payload.status.error) {
         toast.error(payload.status.error);
+      } else if (payload.status.state === 'guard_required') {
+        toast.error('Steam Guard required');
       } else {
         toast.success('Account started');
       }

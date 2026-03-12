@@ -138,9 +138,17 @@ function steamRoutes(workerClient) {
     const user = getUserById(req.auth.user.id);
     const slots = Math.max(1, Number(user.steamAccountSlots) || 1);
     const accounts = Array.isArray(user.steamAccounts) ? [...user.steamAccounts] : [];
+    const normalizedUsername = String(steamUsername).trim().toLowerCase();
 
     if (accounts.length >= slots) {
       return res.status(400).json({ message: `Account limit reached (${slots}).` });
+    }
+
+    if (accounts.some((entry) => {
+      const entryUsername = String(entry.username || '').trim().toLowerCase();
+      return entryUsername && entryUsername === normalizedUsername;
+    })) {
+      return res.status(409).json({ message: 'This Steam account is already added.' });
     }
 
     const account = {
