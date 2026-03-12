@@ -188,6 +188,7 @@ function billingRoutes() {
       const receivedHash = String(req.body?.hash || '').trim();
 
       if (!encodedResult || !receivedHash || !username || !key) {
+        console.error('[shopier-osb] missing parameter or config');
         return res.status(400).send('missing parameter');
       }
 
@@ -196,6 +197,7 @@ function billingRoutes() {
         .digest('hex');
 
       if (expectedHash !== receivedHash) {
+        console.error('[shopier-osb] invalid hash');
         return res.status(400).send('invalid hash');
       }
 
@@ -222,10 +224,12 @@ function billingRoutes() {
 
       // Shopier test ekranının success alması için test bildiriminde purchase bulunmasa bile success dön.
       if (!purchase && String(order?.istest || '0') === '1') {
+        console.log('[shopier-osb] test notification accepted');
         return res.status(200).send('success');
       }
 
       if (!purchase) {
+        console.log('[shopier-osb] notification accepted without matching purchase');
         return res.status(200).send('success');
       }
 
@@ -239,6 +243,7 @@ function billingRoutes() {
             paidAt: new Date().toISOString(),
           },
         });
+        console.log(`[shopier-osb] purchase marked paid: ${purchase.id}`);
       }
 
       return res.status(200).send('success');
@@ -255,11 +260,13 @@ function billingRoutes() {
       const status = String(req.body?.status || extractWebhookOrder(req.body)?.status || '').trim().toLowerCase();
 
       if (!order || (event && event !== 'order.created' && event !== 'order.fulfilled' && event !== 'order.updated')) {
+        console.log('[shopier-webhook] ignored unsupported event');
         return res.status(200).json({ ok: true, ignored: true });
       }
 
       const paidStatus = status || String(order?.status || order?.paymentStatus || '').trim().toLowerCase();
       if (!isPaidStatus(paidStatus)) {
+        console.log('[shopier-webhook] ignored unpaid status');
         return res.status(200).json({ ok: true, ignored: true });
       }
 
@@ -269,10 +276,12 @@ function billingRoutes() {
       const purchase = findMatchingPurchase({ db, order, user });
 
       if (!purchase) {
+        console.log('[shopier-webhook] purchase not found');
         return res.status(200).json({ ok: true, ignored: true, reason: 'purchase_not_found' });
       }
 
       if (purchase.status === 'paid' || purchase.status === 'redeemed') {
+        console.log(`[shopier-webhook] purchase already processed: ${purchase.id}`);
         return res.status(200).json({ ok: true, ignored: true, reason: 'already_processed' });
       }
 
@@ -284,6 +293,7 @@ function billingRoutes() {
       };
 
       await markPurchasePaid({ purchaseId: purchase.id, verification });
+      console.log(`[shopier-webhook] purchase marked paid: ${purchase.id}`);
       return res.status(200).json({ ok: true });
     } catch (error) {
       console.error('[shopier-webhook] failed', error);
@@ -402,7 +412,7 @@ function billingRoutes() {
     }
 
     let redeemCode = (db.redeemCodes || []).find((code) => code.purchaseId === purchase.id) || null;
-    if (purchase.status === 'paid' && redeemCode) {
+    if ((purchase.status === 'paid' || purchase.status === 'redeemed') && redeemCode) {
       return res.json({ ok: true, receipt: buildReceipt(purchase, redeemCode) });
     }
 

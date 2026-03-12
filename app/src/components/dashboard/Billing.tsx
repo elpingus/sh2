@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { ExternalLink, Copy, RefreshCw, CheckCircle2, Hourglass, Ticket } from 'lucide-react';
@@ -61,6 +61,7 @@ export default function Billing() {
   const [receipt, setReceipt] = useState<Receipt | null>(null);
   const [loading, setLoading] = useState(false);
   const [verifying, setVerifying] = useState(false);
+  const lastReceiptStatus = useRef<string | null>(null);
 
   const selectedPlan = useMemo(() => paidPlans.find((item) => item.id === plan) || paidPlans[0], [paidPlans, plan]);
 
@@ -97,6 +98,15 @@ export default function Billing() {
     try {
       const payload = await apiRequest<{ receipt: Receipt }>(`/billing/receipt/${currentInvoiceId}`);
       setReceipt(payload.receipt);
+      if (silent && lastReceiptStatus.current && lastReceiptStatus.current !== payload.receipt.status) {
+        if (payload.receipt.status === 'paid') {
+          toast.success('Payment confirmed. Redeem key is ready.');
+        }
+        if (payload.receipt.status === 'redeemed') {
+          toast.success('Purchase redeemed successfully.');
+        }
+      }
+      lastReceiptStatus.current = payload.receipt.status;
       return payload.receipt;
     } catch (error) {
       if (!silent) {
@@ -130,6 +140,12 @@ export default function Billing() {
 
     return () => window.clearInterval(interval);
   }, [invoiceId, receipt?.status]);
+
+  useEffect(() => {
+    if (receipt?.status) {
+      lastReceiptStatus.current = receipt.status;
+    }
+  }, [receipt?.status]);
 
   const startCheckout = async () => {
     setLoading(true);
