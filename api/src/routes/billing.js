@@ -1,4 +1,4 @@
-const { randomUUID } = require('crypto');
+const { randomUUID, createHmac } = require('crypto');
 const express = require('express');
 const { requireAuth } = require('../middleware/auth');
 const { readDb, updateDb } = require('../lib/db');
@@ -137,6 +137,13 @@ function buildReceipt(purchase, redeemCode = null) {
   };
 }
 
+function getShopierOsbConfig() {
+  return {
+    username: String(process.env.SHOPIER_OSB_USERNAME || '').trim(),
+    key: String(process.env.SHOPIER_OSB_KEY || '').trim(),
+  };
+}
+
 async function markPurchasePaid({ purchaseId, verification }) {
   await updateDb((current) => {
     const purchaseIndex = current.purchases.findIndex((item) => item.id === purchaseId);
@@ -173,6 +180,73 @@ async function markPurchasePaid({ purchaseId, verification }) {
 
 function billingRoutes() {
   const router = express.Router();
+
+  router.post('/shopier/osb', async (req, res) => {
+    try {
+      const { username, key } = getShopierOsbConfig();
+      const encodedResult = String(req.body?.res || '');
+      const receivedHash = String(req.body?.hash || '').trim();
+
+      if (!encodedResult || !receivedHash || !username || !key) {
+        return res.status(400).send('missing parameter');
+      }
+
+      const expectedHash = createHmac('sha256', key)
+        .update(`${encodedResult}${username}`)
+        .digest('hex');
+
+      if (expectedHash !== receivedHash) {
+        return res.status(400).send('invalid hash');
+      }
+
+      const decoded = Buffer.from(encodedResult, 'base64').toString('utf8');
+      const order = JSON.parse(decoded);
+      const db = readDb();
+      const email = String(order?.email || '').trim().toLowerCase();
+      const user = (db.users || []).find((item) => String(item.email || '').trim().toLowerCase() === email) || null;
+      const purchase = findMatchingPurchase({
+        db,
+        order: {
+          ...order,
+          email,
+          amount: Number(order?.price),
+          currency: String(order?.currency ?? '').trim().toUpperCase(),
+          id: order?.orderid,
+          products: Array.isArray(order?.productid)
+            ? order.productid.map((id) => ({ productId: id }))
+            : [{ productId: order?.productid }],
+          status: 'paid',
+        },
+        user,
+      });
+
+      // Shopier test ekranının success alması için test bildiriminde purchase bulunmasa bile success dön.
+      if (!purchase && String(order?.istest || '0') === '1') {
+        return res.status(200).send('success');
+      }
+
+      if (!purchase) {
+        return res.status(200).send('success');
+      }
+
+      if (purchase.status !== 'paid' && purchase.status !== 'redeemed') {
+        await markPurchasePaid({
+          purchaseId: purchase.id,
+          verification: {
+            orderId: String(order?.orderid || ''),
+            amount: Number(order?.price),
+            currency: String(order?.currency ?? purchase.paymentCurrency ?? '').toUpperCase(),
+            paidAt: new Date().toISOString(),
+          },
+        });
+      }
+
+      return res.status(200).send('success');
+    } catch (error) {
+      console.error('[shopier-osb] failed', error);
+      return res.status(500).send('error');
+    }
+  });
 
   router.post('/shopier/webhook', async (req, res) => {
     try {
